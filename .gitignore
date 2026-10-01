@@ -1,0 +1,73 @@
+# Quello che il programma produce: brani scaricati, video rifatti, montaggi.
+# Pesanti e spesso coperti da copyright: mai su GitHub.
+risultati/
+failed_tracks.txt
+
+# Database locale (condiviso con gli altri scraper)
+*.db
+*.db-shm
+*.db-wal
+*.db.backup-*
+
+# Modelli dei sottotitoli: scaricati alla prima trascrizione, centinaia di MB
+modelli/
+
+# Log
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE / sistema
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+desktop.ini
+*.lnk
+~$*
+
+# Catture dello schermo lasciate nella cartella.
+#
+# Il pattern e' quello del nome che ci mette Windows, con la data: "Screenshot
+# 2026-08-02 205040.png". Resta stretto cosi' invece di diventare
+# "Screenshot*" perche' su Windows git confronta i nomi senza distinguere
+# maiuscole e minuscole (core.ignorecase): un pattern largo si prenderebbe
+# anche un eventuale screenshot.png messo di proposito nel repository.
+Screenshot 20*.png
+Screenshot_20*.png
+
+# Appunti di lavoro locali
+memory/
+
+# Sfondo della GUI: scaricato al primo avvio dalla Release, non versionato
+assets/*.mp4
+
+# Costruzione: PyInstaller (dist/, build/) e Inno Setup (installer/output/).
+# Il risultato pesa decine di megabyte e si rifa' in due minuti con
+# costruisci.ps1, quindi nel repository non ha senso tenerlo. Sta come
+# allegato della Release, ed e' li' che va cercato.
+build/
+dist/
+installer/output/
+# Anche fuori da dist/: un eseguibile copiato sul desktop del progetto per
+# provarlo, e committato per distrazione, sono 40 MB dentro la storia di git
+# che poi non si tolgono piu' senza riscriverla.
+*.exe
+*.pyz
+*.spec.bak
+
+# Cartelle di lavoro e roba di passaggio
+tmp/
+temp/
+.pytest_cache/
+*.tmp
+*.bak
+*.orig
+
+# La documentazione lunga resta in locale
+docs/

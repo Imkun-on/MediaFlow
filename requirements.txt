@@ -1,0 +1,29 @@
+# MediaDex - dipendenze Python
+#
+# NB: serve anche FFmpeg nel PATH (non installabile via pip):
+#   winget install Gyan.FFmpeg
+#
+# yt-dlp va aggiornato spesso (YouTube cambia le API interne):
+#   pip install -U yt-dlp
+
+yt-dlp>=2026.6.9
+requests>=2.31
+PySocks>=1.7   # testi e copertine passano da Tor (server/utils/tor.py)
+rich>=13.0
+mutagen>=1.47   # opzionale: tagging metadati/copertina dei file .m4a
+pywin32>=306    # solo per BurnDex (masterizzazione CD audio via IMAPI2, Windows)
+# Interfaccia grafica (MediaDex.py): usa il WebView gia' presente in
+# Windows, quindi non porta con se' nessun motore di rendering da distribuire
+pywebview>=6.0
+# Sottotitoli coi parlanti (solo video): Whisper per il testo, pyannote in
+# ONNX per capire quando parla chi, sherpa-onnx per riconoscere le voci, scipy
+# per raggrupparle. Tutto su CPU, niente account: i modelli si scaricano da
+# soli la prima volta, in modelli/
+faster-whisper>=1.1
+sherpa-onnx>=1.12
+onnxruntime>=1.17
+scipy>=1.11
+numpy>=1.26
+# La traduzione dei sottotitoli: Opus-MT gira su ctranslate2 (arriva con
+# faster-whisper), sentencepiece ne divide il testo in pezzi
+sentencepiece>=0.2
