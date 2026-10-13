@@ -177,8 +177,34 @@ def _pannello_esito(dst: str, sorgente: dict | None = None,
                         border_style='bright_green', box=ROUNDED,
                         width=LARGHEZZA, padding=(0, 0)))
 
+# I codificatori che si possono chiedere per lo spezzone, e in quale
+# contenitore ciascuno puo' stare. Il WebM accetta solo AV1 (e VP9, che qui
+# non si offre); il MOV e' di Apple, e l'AV1 li' dentro non lo apre quasi
+# nessuno.
+CODEC_VIDEO = {
+    'h264': ['-c:v', 'libx264', '-preset', 'medium'],
+    'h265': ['-c:v', 'libx265', '-preset', 'medium', '-tag:v', 'hvc1'],
+    'av1':  ['-c:v', 'libsvtav1', '-preset', '8'],
+}
+CODEC_PER_CONTENITORE = {
+    '.mp4': ('h264', 'h265', 'av1'),
+    '.mov': ('h264', 'h265'),
+    '.mkv': ('h264', 'h265', 'av1'),
+    '.webm': ('av1',),
+}
+# La stessa qualita' a occhio vuole un numero diverso per ogni codificatore.
+CRF_PER_CODEC = {'h264': CRF_DEFAULT, 'h265': 24, 'av1': 30}
+
+
+def codec_adatto(estensione: str, codec: str) -> str:
+    """Il codec chiesto, o il primo che quel contenitore sa tenere."""
+    ammessi = CODEC_PER_CONTENITORE.get(estensione.lower(), ('h264',))
+    return codec if codec in ammessi else ammessi[0]
+
+
 def taglia(src: str, dst: str, inizio: float, fine: float | None,
-           preciso: bool = False, crf: int = CRF_DEFAULT) -> bool:
+           preciso: bool = False, crf: int = CRF_DEFAULT, *,
+           codec: str = '', altezza: int = 0, audio: bool = True) -> bool:
     """Estrae lo spezzone fra ``inizio`` e ``fine``.
 
     In copia il taglio si aggancia al fotogramma chiave precedente, perche' i
@@ -187,6 +213,10 @@ def taglia(src: str, dst: str, inizio: float, fine: float | None,
     ``preciso`` si ricodifica e il taglio cade dove e' stato chiesto.
 
     Sull'audio la differenza non esiste: i fotogrammi durano millisecondi.
+
+    ``codec`` (h264, h265, av1) e ``altezza`` chiedono una ricodifica, e con
+    quella il taglio e' preciso comunque. Senza ``audio`` lo spezzone esce
+    muto. Il contenitore lo decide l'estensione di ``dst``.
     """
     info = probe(src)
     if not info:
@@ -198,14 +228,33 @@ def taglia(src: str, dst: str, inizio: float, fine: float | None,
         console.print(t('error.empty_range'))
         return False
 
+    estensione = os.path.splitext(dst)[1].lower()
+    ridimensiona = bool(altezza) and altezza != info['height']
+    ricodifica = preciso or bool(codec) or ridimensiona
+    if ricodifica:
+        codec = codec_adatto(estensione, codec or 'h264')
+        preciso = True
+
     cmd = ['ffmpeg', '-hide_banner', '-v', 'error', '-y',
            '-ss', f'{inizio:.3f}', '-t', f'{durata:.3f}', '-i', src]
-    if preciso:
-        cmd += ['-c:v', 'libx264', '-crf', str(crf), '-preset', 'medium',
-                '-c:a', 'aac', '-b:a', '192k']
+    if ricodifica:
+        if ridimensiona:
+            cmd += ['-vf', f'scale=-2:{altezza}:flags=lanczos']
+        cmd += [*CODEC_VIDEO[codec],
+                '-crf', str(crf if codec == 'h264' else CRF_PER_CODEC[codec]),
+                '-pix_fmt', 'yuv420p']
+        if audio:
+            # Nel WebM l'audio e' Opus; altrove AAC, che apre chiunque.
+            cmd += (['-c:a', 'libopus', '-b:a', '160k'] if estensione == '.webm'
+                    else ['-c:a', 'aac', '-b:a', '192k'])
     else:
         cmd += ['-c', 'copy']
-    cmd += ['-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', dst]
+    if not audio:
+        cmd += ['-an']
+    cmd += ['-avoid_negative_ts', 'make_zero']
+    if estensione in ('.mp4', '.mov'):
+        cmd += ['-movflags', '+faststart']
+    cmd.append(dst)
 
     if not _esegui(cmd, t('run.cutting'), int(durata * info['fps'])):
         return False
@@ -454,6 +503,49 @@ def webp(src: str, dst: str, inizio: float | None = None,
     _pannello_esito(dst, None, t('gif.note', inizio=fmt_durata(inizio),
                                  durata=f'{durata:.1f}', fps=fps, w=larghezza))
     return True
+
+# ── La timeline della finestra ───────────────────────────────────────────────
+
+FOTOGRAMMI_STRISCIA = 10
+
+
+def striscia(src: str, cartella: str, durata: float,
+             quanti: int = FOTOGRAMMI_STRISCIA) -> list[str]:
+    """I fotogrammi della timeline: ``quanti`` immagini a passo regolare.
+
+    Uno alla volta, saltando al punto giusto, e non con un filtro che scorre
+    tutto il video: su un film di due ore la differenza e' fra un secondo e
+    qualche minuto. Quelli che ci sono gia' non si rifanno.
+    """
+    os.makedirs(cartella, exist_ok=True)
+    fatti = []
+    for i in range(quanti):
+        dst = os.path.join(cartella, f'{i:02d}.jpg')
+        if not os.path.isfile(dst):
+            istante = durata * (i + 0.5) / quanti
+            subprocess.run(
+                ['ffmpeg', '-hide_banner', '-v', 'error', '-y', '-ss', f'{istante:.3f}',
+                 '-i', src, '-frames:v', '1', '-vf', 'scale=-2:120', '-q:v', '5', dst],
+                capture_output=True, timeout=60,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if os.path.isfile(dst):
+            fatti.append(dst)
+    return fatti
+
+
+def onda(src: str, dst: str) -> bool:
+    """L'audio del video disegnato come una forma d'onda, in un'immagine."""
+    if os.path.isfile(dst):
+        return True
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    esito = subprocess.run(
+        ['ffmpeg', '-hide_banner', '-v', 'error', '-y', '-i', src, '-filter_complex',
+         'aformat=channel_layouts=mono,showwavespic=s=1600x80:colors=0x8c8c8c',
+         '-frames:v', '1', dst],
+        capture_output=True, timeout=600,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    return esito.returncode == 0 and os.path.isfile(dst)
+
 
 def nome_uscita(src: str, suffisso: str, estensione: str | None = None,
                 cartella: str | None = None) -> str:

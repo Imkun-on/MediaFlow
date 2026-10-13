@@ -33,7 +33,7 @@ REQUEST_TIMEOUT = 30       # Timeout (secondi) delle richieste HTTP
 # brano gia' scaricato in .m4a non deve far saltare il download dello
 # stesso titolo in video (e viceversa), mentre tra formati dello stesso
 # tipo il file esistente vale comunque come "gia' fatto".
-FORMATI_AUDIO = frozenset({'m4a', 'mp3', 'opus'})
+FORMATI_AUDIO = frozenset({'m4a', 'mp3', 'opus', 'flac', 'wav'})
 
 
 FORMATI_VIDEO = frozenset({'mp4', 'mkv'})
@@ -46,10 +46,20 @@ FORMATI_VIDEO = frozenset({'mp4', 'mkv'})
 #   opus -> Opus ~160 kbps (itag 251), copia diretta
 #   mp3  -> YouTube non lo serve mai: la conversione è inevitabile, quindi si
 #           parte dal flusso di qualità più alta disponibile (di norma Opus).
+#   flac, wav -> come l'mp3: si converte dal flusso migliore. Sono formati
+#           senza perdita, ma la sorgente di YouTube la perdita l'ha già
+#           subita: il file è più grande, non più fedele.
 # Ogni voce termina con dei ripieghi progressivi, per i video che non
 # espongono il codec preferito.
 AUDIO_SOURCE_FORMATS = {
     'm4a': 'bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best',
     'opus': 'bestaudio[acodec=opus]/bestaudio[ext=webm]/bestaudio/best',
     'mp3': 'bestaudio/best',
+    'flac': 'bestaudio/best',
+    'wav': 'bestaudio/best',
 }
+
+# I formati in cui yt-dlp sa incorporare la copertina. Nel WAV non c'è posto.
+FORMATI_CON_COPERTINA = frozenset({'m4a', 'mp3', 'opus', 'flac'})
+# Quelli compressi con perdita, dove un bitrate ha senso.
+FORMATI_CON_BITRATE = frozenset({'m4a', 'mp3', 'opus'})

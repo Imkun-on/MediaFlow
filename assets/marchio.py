@@ -1,107 +1,143 @@
 # -*- coding: utf-8 -*-
-"""Il marchio di MediaFlow, ritagliato una volta sola e messo nei tre posti.
+"""Il marchio di MediaFlow, montato una volta sola e messo nei posti in cui serve.
 
     python assets/marchio.py
 
 Da dove viene
-    Da ``assets/MediaFlow-originale.png``, l'immagine del nome: un play con gli
-    spigoli molto arrotondati, un secondo play dentro e tre scie a destra, in
-    azzurro e viola. Qui se ne ritaglia solo il segno - senza il nome, il motto
-    e le icone delle sezioni - e lo si ritinge coi verdi del tema.
+    Da ``assets/icona-originale.png``: una gazza ladra in volo con un CD nel
+    becco, a incisione, inchiostro nero su fondo verde piatto. E' un quadrato
+    pieno, senza angoli e senza bordo: quelli li mette questo file, cosi' sono
+    identici su tutti i sistemi e per cambiarli non si rifa' il disegno.
 
-    Prima il segno era ridisegnato a mano con poligoni, ma gli spigoli venivano
-    troppo vivi rispetto all'originale. Ritagliarlo lo tiene identico.
-
-Come si ritinge
-    Si sposta solo la tinta e si lasciano luce e saturazione: le sfumature e
-    le ombre dell'originale restano dove sono. L'azzurro in alto diventa il
-    verde acido (--ciano), il blu il verde di punta (--magenta), il viola in
-    basso un verde piu' profondo, e un po' piu' scuro, come nell'originale.
-
-L'alone
-    Attorno al segno l'immagine ha un bagliore semitrasparente. Su fondo nero
-    diventerebbe una macchia sporca, quindi la trasparenza si taglia: sotto
-    ALFA_VIA sparisce, sopra ALFA_PIENO e' pieno, in mezzo resta il bordo
-    sfumato. Il bagliore nella finestra lo rifa' il CSS con drop-shadow.
+Cosa gli si fa
+    Lo si ritaglia in un quadrato dagli angoli tondi e gli si passa attorno un
+    filo scuro, che lo stacca tanto da un desktop chiaro quanto da uno scuro.
 
 Dove finisce
-    - ``assets/MediaDex.ico`` e ``assets/MediaDex.png``: l'eseguibile, la
-      finestra, l'installatore. Quadrati, con un filo di margine.
-    - ``client/marchio.png``: la barra laterale e il velo di avvio. Stretto
-      sul segno, perche' li' un quadrato lascerebbe fasce vuote.
+    - ``assets/MediaDex.ico``: l'eseguibile, la finestra e l'installatore su
+      Windows.
+    - ``assets/MediaDex.icns``: l'applicazione su macOS. Li' le icone non
+      toccano i bordi della tela: il disegno occupa l'ottanta per cento e il
+      resto e' margine vuoto, come vuole il sistema.
+    - ``assets/MediaDex.png``: Linux, e l'icona della pagina.
+    - ``client/marchio.png``: la barra laterale e il velo di avvio. Qui non
+      c'e' il quadrato: solo la gazza, scontornata, sul nero della finestra.
+
+Come si toglie il verde
+    L'inchiostro e la carta sono grigi, cioe' hanno rosso, verde e blu uguali;
+    il fondo no. Quanto fondo c'e' in un punto lo dice quindi la differenza fra
+    verde e rosso, e una volta saputo lo si sottrae: sui bordi dei tratti, dove
+    i due si mescolano, non resta nessun alone verde.
+
+    Ali e coda nell'originale escono dal riquadro, e senza il quadrato attorno
+    finirebbero con un taglio netto: verso i bordi la gazza sfuma.
 """
 from __future__ import annotations
 
 import os
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 QUI = os.path.dirname(os.path.abspath(__file__))
 RADICE = os.path.dirname(QUI)
-ORIGINALE = os.path.join(QUI, 'MediaFlow-originale.png')
+ORIGINALE = os.path.join(QUI, 'icona-originale.png')
 ICO = os.path.join(QUI, 'MediaDex.ico')
+ICNS = os.path.join(QUI, 'MediaDex.icns')
 PNG = os.path.join(QUI, 'MediaDex.png')
 PAGINA = os.path.join(RADICE, 'client', 'marchio.png')
 
-# Il riquadro del segno dentro l'originale (1254x1254): sinistra, alto,
-# destra, basso. Sotto c'e' gia' il nome, che qui non va.
-RITAGLIO = (421, 202, 862, 567)
+# Tutto e' pensato su 1024 punti di lato, la misura piu' grande che un sistema
+# chieda (macOS); le altre si ricavano rimpicciolendo.
+LATO = 1024
+RAGGIO = 228                          # degli angoli
+BORDO = 10                            # lo spessore del filo scuro
+INCHIOSTRO = (21, 21, 19, 255)
 
-# Il taglio dell'alone, su 0-255.
-ALFA_VIA, ALFA_PIENO = 110, 235
-
-# Le tinte, in gradi. L'originale va dall'azzurro (190) al viola (275); il
-# tema va dal verde acido (104) al verde di punta (145).
-TINTA_DA, TINTA_A = 190, 108          # l'azzurro diventa acido...
-TINTA_PASSO = 0.45                    # ...e ogni grado verso il viola ne vale meno di mezzo
-TINTA_MIN, TINTA_MAX = 104, 148
-# Il viola si scurisce fino a questa frazione, da 230 gradi in su.
-SCURO_VIOLA = 0.22
+# Pillow non ammorbidisce i bordi delle forme che disegna: le si disegna
+# quattro volte piu' grandi e le si rimpicciolisce.
+LISCIO = 4
 
 # Le misure che Windows si aspetta dentro un .ico. La piu' piccola e' quella
 # della barra delle applicazioni, la piu' grande quella delle anteprime grandi
 # di Esplora risorse.
-MISURE = [16, 24, 32, 48, 64, 128, 256]
-LATO = 256
-MARGINE = 0.04                        # sul lato del quadrato, per parte
+MISURE_ICO = [16, 24, 32, 48, 64, 128, 256]
+LATO_PNG = 512
+LATO_PAGINA = 400                     # nella pagina non supera i 170 punti
+PIENO_MAC = 824                       # il lato del disegno dentro i 1024 di macOS
+
+# Lo scontorno. Sotto ALFA_VIA un punto e' fondo e sparisce, sopra ALFA_PIENO
+# e' disegno pieno: la grana del verde sta tutta sotto la prima soglia.
+ANGOLO = 40                           # il lato dei riquadri da cui si legge il fondo
+ALFA_VIA, ALFA_PIENO = .10, .88
+SFUMA = 44                            # la fascia lungo i bordi in cui la gazza svanisce
 
 
-def segno() -> Image.Image:
-    """Il segno ritagliato e ritinto, stretto, su fondo trasparente."""
-    img = Image.open(ORIGINALE).convert('RGBA').crop(RITAGLIO)
-    a = np.array(img).astype(np.float32)
-    alfa = np.clip((a[..., 3] - ALFA_VIA) / (ALFA_PIENO - ALFA_VIA), 0, 1)
+def icona() -> Image.Image:
+    """L'originale dentro il quadrato dagli angoli tondi, col suo filo."""
+    img = Image.open(ORIGINALE).convert('RGBA').resize((LATO, LATO), Image.LANCZOS)
+    g = LATO * LISCIO
 
-    hsv = np.array(img.convert('RGB').convert('HSV')).astype(np.float32)
-    tinta = hsv[..., 0] * 360 / 255
-    nuova = np.clip(TINTA_A + (tinta - TINTA_DA) * TINTA_PASSO, TINTA_MIN, TINTA_MAX)
-    hsv[..., 0] = nuova * 255 / 360
-    hsv[..., 2] *= 1 - SCURO_VIOLA * np.clip((tinta - 230) / 45, 0, 1)
+    sagoma = Image.new('L', (g, g), 0)
+    ImageDraw.Draw(sagoma).rounded_rectangle((0, 0, g - 1, g - 1), RAGGIO * LISCIO, fill=255)
 
-    rgb = np.array(Image.fromarray(hsv.astype(np.uint8), 'HSV').convert('RGB'))
-    return Image.fromarray(np.dstack([rgb, (alfa * 255).astype(np.uint8)]), 'RGBA')
+    filo = Image.new('RGBA', (g, g), (0, 0, 0, 0))
+    meta = BORDO * LISCIO // 2
+    ImageDraw.Draw(filo).rounded_rectangle(
+        (meta, meta, g - 1 - meta, g - 1 - meta), RAGGIO * LISCIO - meta,
+        outline=INCHIOSTRO, width=BORDO * LISCIO)
+
+    img = Image.alpha_composite(img, filo.resize((LATO, LATO), Image.LANCZOS))
+    img.putalpha(sagoma.resize((LATO, LATO), Image.LANCZOS))
+    return img
 
 
-def quadrato(s: Image.Image, lato: int = LATO) -> Image.Image:
-    """Il segno centrato su un quadrato trasparente, per le icone."""
-    larg, alt = s.size
-    tela = round(max(larg, alt) * (1 + 2 * MARGINE))
-    q = Image.new('RGBA', (tela, tela), (0, 0, 0, 0))
-    q.paste(s, ((tela - larg) // 2, (tela - alt) // 2), s)
-    return q.resize((lato, lato), Image.LANCZOS)
+def gazza() -> Image.Image:
+    """La gazza senza il fondo, stretta sul disegno."""
+    a = np.asarray(Image.open(ORIGINALE).convert('RGB')).astype(np.float32)
+
+    # Il verde del fondo: la mediana di tre angoli. Il quarto, in basso a
+    # destra, e' occupato dalla coda.
+    k = ANGOLO
+    fondo = np.median(np.concatenate([a[:k, :k].reshape(-1, 3),
+                                      a[:k, -k:].reshape(-1, 3),
+                                      a[-k:, :k].reshape(-1, 3)]), axis=0)
+
+    verde = np.clip((a[..., 1] - a[..., 0]) / (fondo[1] - fondo[0]), 0, 1)
+    alfa = np.clip((1 - verde - ALFA_VIA) / (ALFA_PIENO - ALFA_VIA), 0, 1)
+    colore = (a - verde[..., None] * fondo) / np.maximum(1 - verde[..., None], .05)
+
+    alto, largo = alfa.shape
+    y, x = np.mgrid[0:alto, 0:largo]
+    dal_bordo = np.minimum(np.minimum(x, largo - 1 - x), np.minimum(y, alto - 1 - y))
+    alfa *= np.clip(dal_bordo / SFUMA, 0, 1)
+
+    img = Image.fromarray(
+        np.dstack([np.clip(colore, 0, 255), alfa * 255]).astype(np.uint8), 'RGBA')
+    return img.crop(img.getchannel('A').point(lambda v: 255 if v > 8 else 0).getbbox())
+
+
+def con_margine(i: Image.Image) -> Image.Image:
+    """La stessa icona, rimpicciolita al centro di una tela vuota: per macOS."""
+    tela = Image.new('RGBA', (LATO, LATO), (0, 0, 0, 0))
+    scarto = (LATO - PIENO_MAC) // 2
+    tela.paste(i.resize((PIENO_MAC, PIENO_MAC), Image.LANCZOS), (scarto, scarto))
+    return tela
 
 
 def scrivi() -> None:
-    s = segno()
-    s.save(PAGINA)
-    icona = quadrato(s)
-    icona.save(PNG)
+    i = icona()
+    g = gazza()
+    g.thumbnail((LATO_PAGINA, LATO_PAGINA), Image.LANCZOS)
+    g.save(PAGINA)
+    i.resize((LATO_PNG, LATO_PNG), Image.LANCZOS).save(PNG)
     # Pillow ricampiona da solo le misure richieste, partendo dalla piu' grande.
-    icona.save(ICO, sizes=[(m, m) for m in MISURE])
-    print('  {}  {}x{}'.format(PAGINA, *s.size))
-    print('  {}  {}x{}'.format(PNG, LATO, LATO))
-    print('  {}  {}'.format(ICO, ', '.join(str(m) for m in MISURE)))
+    i.save(ICO, sizes=[(m, m) for m in MISURE_ICO])
+    con_margine(i).save(ICNS)
+    print('  {}  {}x{}'.format(PAGINA, *g.size))
+    print('  {}  {}x{}'.format(PNG, LATO_PNG, LATO_PNG))
+    print('  {}  {}'.format(ICO, ', '.join(str(m) for m in MISURE_ICO)))
+    print('  {}'.format(ICNS))
 
 
 if __name__ == '__main__':

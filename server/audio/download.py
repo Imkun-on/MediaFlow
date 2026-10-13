@@ -27,8 +27,9 @@ from rich.progress import Progress
 
 from server.config import i18n
 from server.config.settings import (
-    AUDIO_SOURCE_FORMATS, FORMATI_AUDIO, FORMATI_VIDEO, MAX_RETRIES,
-    RETRY_BASE_DELAY)
+    AUDIO_SOURCE_FORMATS, FORMATI_AUDIO, FORMATI_CON_COPERTINA, FORMATI_VIDEO,
+    MAX_RETRIES, RETRY_BASE_DELAY)
+from server.audio.ritocchi import ritocca, servono as ritocchi_servono
 from server.audio.chapters import capitoli_album, dividi_per_capitoli
 from server.audio.tagging import leggi_testo, scrivi_lrc, tag_m4a
 from server.audio.verify import verifica_file
@@ -305,7 +306,8 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
                     numbered: bool = False, on_phase=None, on_progress=None,
                     media: str = 'audio', dividi: bool = False,
                     sottotitoli: str = '', traduci: str = '',
-                    sincronizza: bool = False) -> dict:
+                    sincronizza: bool = False,
+                    ritocchi: dict | None = None) -> dict:
     """Scarica una singola traccia e ne registra i metadati.
 
     Con media='audio' (default) scarica il solo flusso audio; con
@@ -327,6 +329,11 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
          con ``traduci`` (``'en'``) anche i sottotitoli tradotti.
     In caso di errore riprova fino a MAX_RETRIES volte con attesa crescente.
 
+    ``ritocchi`` (solo audio) sono le scelte del pannello delle opzioni:
+    ``bitrate`` in kbps, ``frequenza`` in Hz, ``mono``, ``normalizza``, e i due
+    che di norma sono accesi, ``metadati`` e ``copertina``. Senza, il brano
+    esce com'e' sempre uscito.
+
     Restituisce {'title', 'status' ('ok'/'skip'/'fail'), 'file', 'error',
     'lyrics' (True se è stato trovato e incorporato il testo), 'testo'
     (il testo incorporato, LRC o semplice)}.
@@ -344,6 +351,11 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
 
     prefix = prefisso_traccia(track_num, total_tracks) if numbered else ''
     is_video = media == 'video'
+    ritocchi = {} if is_video else dict(ritocchi or {})
+    con_metadati = bool(ritocchi.get('metadati', True))
+    con_copertina = con_metadati and bool(ritocchi.get('copertina', True))
+    # I tag iTunes (e il testo nel tag) vivono solo nel contenitore MP4.
+    contenitore_mp4 = audio_format in ('m4a', 'mp4')
 
     formati = FORMATI_VIDEO if is_video else FORMATI_AUDIO
     existing = (_is_already_downloaded(title, output_dir, prefix, exts=formati)
@@ -444,8 +456,20 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
         ydl_opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': audio_format,
-            'preferredquality': '0',
+            # Zero e' «il meglio che c'e'»; un numero e' il bitrate chiesto.
+            'preferredquality': str(int(ritocchi.get('bitrate') or 0)),
         }]
+        # L'M4A lo tagga ``tag_m4a`` piu' sotto, insieme al testo. Per gli
+        # altri formati mutagen andrebbe guidato caso per caso, e yt-dlp lo
+        # sa gia' fare: titolo, autore e copertina li scrive lui.
+        if not contenitore_mp4:
+            if con_metadati:
+                ydl_opts['postprocessors'].append(
+                    {'key': 'FFmpegMetadata', 'add_metadata': True})
+            if con_copertina and audio_format in FORMATI_CON_COPERTINA:
+                ydl_opts['writethumbnail'] = True
+                ydl_opts['postprocessors'].append(
+                    {'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
 
     def phase(name: str) -> None:
         """Segnala il superamento di una fase, se c'è un tracker collegato."""
@@ -524,6 +548,14 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
                             pass
                         return result
 
+                    # I ritocchi che obbligano a ricodificare: mono, frequenza,
+                    # volume. Dopo la verifica, perche' non ha senso lavorare
+                    # un file troncato, e prima dei tag, che cosi' si scrivono
+                    # sul file definitivo.
+                    if not is_video and ritocchi_servono(ritocchi, final_ext):
+                        phase('ritocco')
+                        ritocca(final_file, ritocchi)
+
                     # Divisione in tracce, se richiesta e se i capitoli
                     # sembrano davvero quelli di un disco. Va fatta qui:
                     # dopo la verifica, perché tagliare un file troncato
@@ -585,17 +617,20 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
                     # I tag iTunes vivono nel container MP4: valgono per
                     # .m4a e .mp4, non per il Matroska (.mkv).
                     if final_ext != 'mkv':
-                        tag_m4a(
-                            final_file,
-                            title=info.get('title', title),
-                            artist=info.get('artist') or info.get('uploader') or uploader,
-                            album=album or info.get('album'),
-                            track_num=track_num,
-                            thumbnail_url=info.get('thumbnail'),
-                            lyrics=synced or plain,
-                        )
+                        if contenitore_mp4 and (is_video or con_metadati):
+                            tag_m4a(
+                                final_file,
+                                title=info.get('title', title),
+                                artist=info.get('artist') or info.get('uploader') or uploader,
+                                album=album or info.get('album'),
+                                track_num=track_num,
+                                thumbnail_url=(info.get('thumbnail')
+                                               if is_video or con_copertina else None),
+                                lyrics=synced or plain,
+                            )
                         # Anche fuori dal file, per i lettori che il tag non
-                        # lo leggono (vedi scrivi_lrc).
+                        # lo leggono (vedi scrivi_lrc) e per i formati che un
+                        # posto per il testo non ce l'hanno.
                         if synced and not is_video:
                             scrivi_lrc(final_file, synced, info.get('title', title),
                                        info.get('artist') or info.get('uploader') or uploader)

@@ -1,9 +1,9 @@
 """Il filo teso fra Python e la pagina, e chi lo tiene in mano.
 
 Perche' esiste un modulo apposta
-    La finestra la crea ``MediaDex.py``, il punto d'ingresso. A raggiungerla
+    La finestra la crea ``main.py``, il punto d'ingresso. A raggiungerla
     devono pero' essere ``api.py`` e tutti i thread di lavoro, che di
-    ``MediaDex.py`` non sanno niente e non devono saperne: un modulo del motore
+    ``main.py`` non sanno niente e non devono saperne: un modulo del motore
     che importa il proprio punto d'ingresso chiude un cerchio e rende
     impossibile leggerne uno senza l'altro.
 

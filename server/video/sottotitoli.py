@@ -1768,11 +1768,56 @@ def _ritradotti(lista: list[Riquadro], colori: dict[int, str], da: str, a: str
                            key=lambda b: b.inizio))
 
 
-def riscrivi(video: str) -> dict:
+def _tempo_vtt(s: float) -> str:
+    return _tempo_srt(s).replace(',', '.')
+
+
+def scrivi_vtt(lista: list[Riquadro], percorso: str, colori: dict[int, str]) -> None:
+    """WebVTT: il formato dei sottotitoli sul web. I colori non ci sono - in
+    un VTT li decide la pagina che lo mostra - ma chi parla resta scritto:
+    ogni riga colorata porta l'etichetta ``<v Voce N>``, che i lettori usano
+    per distinguere le voci."""
+    ordine = {persona: n for n, persona in enumerate(sorted(colori), 1)}
+    blocchi = ['WEBVTT']
+    for n, r in enumerate(lista, 1):
+        righe = []
+        for persona, testo, lineetta in r.righe:
+            if lineetta:
+                testo = '– ' + testo
+            righe.append(f'<v Voce {ordine[persona]}>{testo}' if persona in ordine else testo)
+        blocchi.append(f'{n}\n{_tempo_vtt(r.inizio)} --> {_tempo_vtt(r.fine)}\n'
+                       + '\n'.join(righe))
+    with open(percorso, 'w', encoding='utf-8') as f:
+        f.write('\n\n'.join(blocchi) + '\n')
+
+
+def riquadri_da_pagina(riquadri_pagina: list[dict]) -> tuple[list[Riquadro], dict[int, str]]:
+    """I riquadri come li manda l'editor - ``{inizio, fine, righe: [{testo,
+    colore, lineetta}]}``, gia' in ordine o no - nella forma di ``leggi_srt``."""
+    colori: dict[int, str] = {}
+    lista = []
+    for r in sorted(riquadri_pagina, key=lambda r: float(r['inizio'])):
+        righe = []
+        for riga in r.get('righe') or []:
+            testo = str(riga.get('testo', '')).replace('\n', ' ').strip()
+            if not testo:
+                continue
+            colore = (riga.get('colore') or '').upper() or None
+            persona = _chi_riga(colore, testo, colori)
+            righe.append((persona, testo, bool(riga.get('lineetta'))))
+        if righe and float(r['fine']) > float(r['inizio']):
+            lista.append(Riquadro(float(r['inizio']), float(r['fine']), righe))
+    return lista, colori
+
+
+def riscrivi(video: str, impressa: bool = True) -> dict:
     """Dopo una correzione a mano: dal .srt accanto al video rifa' tutto il
     resto. La traduzione (se c'era) si rifa' dal testo corretto, cosi' le
     due lingue dicono la stessa cosa; le tracce tornano nel file; la copia
-    impressa si ridisegna, nella lingua originale."""
+    impressa si ridisegna, nella lingua originale.
+
+    Senza ``impressa`` la copia coi sottotitoli nell'immagine non si rifa': e'
+    la parte che costa minuti, e chi sta ancora correggendo puo' rimandarla."""
     from server.video import traduzione
 
     srt = srt_del_video(video)
@@ -1794,26 +1839,13 @@ def riscrivi(video: str) -> dict:
             scrivi_ass(lista_n, ass, colori_n, larghezza, altezza)
             tracce.append((ass, codice or lingua))
         _incorpora(video, tracce)
-        impresso = imprimi(video, tracce[0][0])
+        impresso = imprimi(video, tracce[0][0]) if impressa else ''
     return {'tracce': len(tracce), 'impresso': impresso}
 
 
 def scrivi_riquadri(percorso: str, riquadri_pagina: list[dict]) -> None:
-    """Il .srt dai riquadri come li manda l'editor: ``{inizio, fine, righe:
-    [{testo, colore, lineetta}]}``, gia' in ordine o no."""
-    colori: dict[int, str] = {}
-    lista = []
-    for r in sorted(riquadri_pagina, key=lambda r: float(r['inizio'])):
-        righe = []
-        for riga in r.get('righe') or []:
-            testo = str(riga.get('testo', '')).replace('\n', ' ').strip()
-            if not testo:
-                continue
-            colore = (riga.get('colore') or '').upper() or None
-            persona = _chi_riga(colore, testo, colori)
-            righe.append((persona, testo, bool(riga.get('lineetta'))))
-        if righe and float(r['fine']) > float(r['inizio']):
-            lista.append(Riquadro(float(r['inizio']), float(r['fine']), righe))
+    """Il .srt dai riquadri come li manda l'editor."""
+    lista, colori = riquadri_da_pagina(riquadri_pagina)
     scrivi_srt(lista, percorso, colori)
 
 

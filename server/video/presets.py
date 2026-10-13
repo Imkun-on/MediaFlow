@@ -224,7 +224,34 @@ def giudizio_fattore(fattore: float) -> tuple[str, str]:
     return 'red', 'quality.note_fake'
 
 
-def catena_filtri(preset: str, info: dict, altezza: int) -> str:
+# I tre ritocchi che si possono chiedere sopra un trattamento.
+#
+# La riduzione del rumore in piu' e' la stessa media fra fotogrammi vicini del
+# trattamento «forte»: toglie il disturbo che salta da un fotogramma all'altro
+# e lascia stare cio' che resta fermo.
+RUMORE_IN_PIU = 'atadenoise=0a=0.02:1a=0.02:2a=0.02:s=9'
+# ``deshake`` cerca di quanto si e' spostata l'inquadratura da un fotogramma
+# all'altro e la riporta al suo posto. Lavora solo a 8 bit, quindi viene prima
+# del passaggio a 10; i bordi che lo spostamento scopre li riempie a specchio.
+STABILIZZA = 'deshake=rx=32:ry=32:edge=mirror'
+# L'intensita' del dettaglio va da 0 a 100 e a 50 lascia la nitidezza che il
+# trattamento ha gia' scelto. ``cas`` non accetta piu' di 1.
+DETTAGLIO_NEUTRO = 50
+NITIDEZZA_MASSIMA = 1.0
+
+
+def nitidezza(preset: str, dettaglio: int | None = None) -> float:
+    """La forza di ``cas`` per un trattamento, corretta dall'intensita' chiesta."""
+    forza = PRESETS[preset]['sharpen']
+    if dettaglio is None:
+        return forza
+    quota = max(0, min(100, int(dettaglio))) / DETTAGLIO_NEUTRO
+    return round(min(NITIDEZZA_MASSIMA, forza * quota), 3)
+
+
+def catena_filtri(preset: str, info: dict, altezza: int, *,
+                  rumore: bool = False, stabilizza: bool = False,
+                  dettaglio: int | None = None) -> str:
     """Compone la catena di filtri completa, nell'ordine corretto.
 
     Il passaggio a 10 bit in testa e il ritorno a 8 bit in coda non sono un
@@ -232,9 +259,23 @@ def catena_filtri(preset: str, info: dict, altezza: int) -> str:
     rampa ha bisogno di valori intermedi che a 8 bit semplicemente non
     esistono. Lavorare a 10 bit e scendere solo alla fine e' quello che
     distingue una sfumatura pulita da una che ha solo bande diverse.
+
+    ``rumore``, ``stabilizza`` e ``dettaglio`` sono i ritocchi chiesti dalla
+    finestra; senza, la catena e' quella del trattamento e basta.
     """
-    catena: list[str] = ['format=yuv420p10le']
-    catena += PRESETS[preset]['filtri'](info)
+    filtri = PRESETS[preset]['filtri'](info)
+    # I semiquadri si separano prima di tutto il resto: stabilizzare un
+    # fotogramma interlacciato sposterebbe insieme due istanti diversi.
+    testa = [f for f in filtri if f.startswith('bwdif')]
+    resto = [f for f in filtri if not f.startswith('bwdif')]
+
+    catena: list[str] = list(testa)
+    if stabilizza:
+        catena += ['format=yuv420p', STABILIZZA]
+    catena.append('format=yuv420p10le')
+    catena += resto
+    if rumore and not any(f.startswith('atadenoise') for f in resto):
+        catena.append(RUMORE_IN_PIU)
 
     if altezza and altezza != info['height']:
         catena.append(f'scale=-2:{altezza}:flags=lanczos')
@@ -243,7 +284,7 @@ def catena_filtri(preset: str, info: dict, altezza: int) -> str:
     # contrasto locale solo dove trova gia' un contorno, quindi non rimarca
     # il disturbo nelle zone piatte come farebbe una maschera di contrasto
     # tradizionale.
-    forza = PRESETS[preset]['sharpen']
+    forza = nitidezza(preset, dettaglio)
     if forza > 0:
         catena.append(f'cas={forza}')
 

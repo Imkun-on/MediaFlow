@@ -39,7 +39,8 @@ function initScaricatore(sez) {
   });
 }
 
-function initAudio() { initScaricatore('audio'); }
+// Audio ha la sua pagina, con la libreria e il lettore: vedi libreria.js. Gli
+// eventi di Python arrivano comunque qui, e per Audio vengono girati di la'.
 function initVideo() { initScaricatore('video'); }
 
 // La traduzione e' dei sottotitoli: senza sottotitoli non c'e' niente da
@@ -83,6 +84,7 @@ window.ascolta('mostraScelta', (s, dati) => {
   const sez = s.nome;
   const voci = dati.voci || [];
   SCARICO[sez].voci = voci;
+  if (sez === 'audio') { window.libreria.scelta(dati); return; }
   if (dati.album) {
     sceltaAlbum(sez, voci[0] || {}, dati.album);
     return;
@@ -193,6 +195,7 @@ function sceltaAlbum(sez, voce, tracce) {
 }
 
 async function scaricaScelti(sez, indici, extra) {
+  if (sez === 'audio') { window.libreria.scarica(indici, extra); return; }
   preparaSchede(sez, indici);
   const opzioni = { ...opzioniScarico(sez), ...(extra || {}), sezione: sez, scelti: indici };
   const esito = await window.pywebview.api.scarica(opzioni);
@@ -256,6 +259,7 @@ function preparaSchede(sez, indici) {
 
 /* Quanto e' scaricata *questa* traccia, in byte: il filo sotto la scheda. */
 window.ascolta('tracciaAvanza', (s, i, frazione) => {
+  if (s.nome === 'audio') { window.libreria.avanza(i, frazione); return; }
   const scheda = (SCARICO[s.nome] || {}).schede[i];
   if (!scheda) return;
   const filo = scheda.querySelector('.filo');
@@ -269,6 +273,7 @@ function rigaSotto(scheda, dettaglio) {
 }
 
 window.ascolta('tracciaFase', (s, i, fase) => {
+  if (s.nome === 'audio') { window.libreria.fase(i, fase); return; }
   const scheda = (SCARICO[s.nome] || {}).schede[i];
   if (!scheda) return;
   scheda.classList.add('in-corso');
@@ -283,8 +288,12 @@ window.ascolta('tracciaFase', (s, i, fase) => {
   scheda.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 });
 
-window.ascolta('tracciaFinita', (s, i, esito, errore, url, quando, testo) => {
+window.ascolta('tracciaFinita', (s, i, esito, errore, url, quando, testo, peso, formato) => {
   const sez = s.nome;
+  if (sez === 'audio') {
+    window.libreria.finita(i, { esito, errore, url, quando, testo, peso, formato });
+    return;
+  }
   const scheda = (SCARICO[sez] || {}).schede[i];
   if (!scheda) return;
   scheda.classList.remove('in-corso');
@@ -513,12 +522,4 @@ function aggiungiPronto(i, scheda, vecchio, quando) {
   conta.textContent = String(SCARICO.video.file.length);
 }
 
-/* Un link lasciato cadere sulla finestra: il nucleo ha gia' portato qui, a
- * questa sezione tocca riempire il campo e partire. */
-window.audioAccettaLink = (testo) => {
-  window.$('#a-link').value = testo;
-  avviaScarico('audio');
-};
-
-window.initAudio = initAudio;
 window.initVideo = initVideo;

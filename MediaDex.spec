@@ -89,7 +89,7 @@ dati += collect_data_files('yt_dlp')
 dati += collect_data_files('faster_whisper')
 
 a = Analysis(
-    ['MediaDex.py'],
+    ['main.py'],
     pathex=[os.path.abspath(SPECPATH)],
     binaries=collect_dynamic_libs('ctranslate2') + collect_dynamic_libs('sherpa_onnx'),
     datas=dati,
@@ -205,8 +205,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     manifest=MANIFEST,
-    # Il marchio: il disco con le barre del livello, verde su nero come
-    # l'interfaccia. Senza questa riga Windows mostra l'icona di ripiego di
+    # Il marchio: la gazza col CD nel becco, generata da assets/marchio.py.
+    # Senza questa riga Windows mostra l'icona di ripiego di
     # PyInstaller, che non c'entra niente con il programma.
     icon=os.path.join('assets', 'MediaDex.ico'),
 )

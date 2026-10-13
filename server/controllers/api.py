@@ -39,6 +39,7 @@ from server.config.paths import (
     cartella_audio as _audio, cartella_montaggi as _montaggi,
     cartella_rimasterizzati as _rimasterizzati, cartella_video as _video,
     dati as _dati, riordina_risultati)
+from server.config.settings import FORMATI_AUDIO as _FORMATI_AUDIO
 from server.config.strings.app import TESTI as TESTI_APP
 from server.config.strings.audio import TESTI as TESTI_AUDIO
 from server.controllers import bridge
@@ -57,6 +58,8 @@ _DLG_CARTELLA = getattr(getattr(webview, 'FileDialog', None), 'FOLDER',
                         getattr(webview, 'FOLDER_DIALOG', 2))
 _DLG_APRI = getattr(getattr(webview, 'FileDialog', None), 'OPEN',
                     getattr(webview, 'OPEN_DIALOG', 10))
+_DLG_SALVA = getattr(getattr(webview, 'FileDialog', None), 'SAVE',
+                     getattr(webview, 'SAVE_DIALOG', 30))
 
 
 # ── Dalla fase finita alla fase in corso ─────────────────────────────────────
@@ -124,6 +127,14 @@ def _clipdex():
         from server.video import edit as _cd
         _clip = _cd
     return _clip
+
+
+def _apri_col_sistema(percorso: str) -> None:
+    """Apre un file o una cartella col programma che il sistema gli associa."""
+    if sys.platform == 'win32':
+        os.startfile(percorso)          # noqa: S606 - e' quello che si vuole
+    else:
+        subprocess.Popen(['open' if sys.platform == 'darwin' else 'xdg-open', percorso])
 
 
 # Il file di log di ciascuna sezione. I nomi sono quelli che i motori danno ai
@@ -368,8 +379,10 @@ class Api:
             } for c in album] if album else None,
         })
         # Un video solo parte subito, intero; se e' un album aspetta la
-        # risposta della finestra, che torna con ``scarica``.
-        if not self._playlist and not album:
+        # risposta della finestra, che torna con ``scarica``. Con ``attendi``
+        # non parte niente: la pagina mette in coda quello che ha trovato, e a
+        # scaricare ci pensa il suo bottone.
+        if not self._playlist and not album and not opzioni.get('attendi'):
             self._scarica_davvero({**opzioni, 'scelti': [0], 'dividi': False})
 
     # ── Download ─────────────────────────────────────────────────────────────
@@ -405,7 +418,23 @@ class Api:
         # Una playlist o un album finiscono in una cartella tutta loro, col
         # loro nome, dentro quella della sezione.
         cartella = _video() if video else _audio()
-        if getattr(self, '_playlist', ''):
+        # In Audio la destinazione si puo' scegliere, e la cartella della
+        # playlist si puo' non volere.
+        scelta = (opzioni.get('cartella') or '').strip() if not video else ''
+        if scelta and os.path.isdir(scelta):
+            cartella = scelta
+        # Il formato si sceglie solo in Audio. Un album diviso in tracce resta
+        # M4A: e' il solo formato che ``dividi_per_capitoli`` sa taggare.
+        formato = 'mp4' if video else (opzioni.get('formato') or 'm4a')
+        if formato not in _FORMATI_AUDIO or opzioni.get('dividi'):
+            formato = 'mp4' if video else 'm4a'
+        ritocchi = None if video else {
+            chiave: opzioni.get(chiave) for chiave in
+            ('bitrate', 'frequenza', 'mono', 'normalizza')}
+        if ritocchi is not None:
+            ritocchi['metadati'] = bool(opzioni.get('metadati', True))
+            ritocchi['copertina'] = bool(opzioni.get('copertina', True))
+        if getattr(self, '_playlist', '') and (video or opzioni.get('cartella_playlist', True)):
             from server.utils.text import nome_file_pulito
             cartella = os.path.join(cartella, nome_file_pulito(self._playlist))
             os.makedirs(cartella, exist_ok=True)
@@ -477,9 +506,10 @@ class Api:
                 riferisci()
 
             esito = ad.download_single(
-                # Sempre mp4 e m4a: l'mkv prendeva il 4K e scaricava molto di
-                # piu' per niente, e mp3/opus restavano senza tag ne' copertina.
-                entry, cartella, 'mp4' if video else 'm4a',
+                # Il video e' sempre mp4: l'mkv prendeva il 4K e scaricava
+                # molto di piu' per niente.
+                entry, cartella, formato,
+                ritocchi=ritocchi,
                 track_num=indice + 1,
                 total_tracks=totale,
                 numbered=bool(getattr(self, '_playlist', '')),
@@ -515,7 +545,10 @@ class Api:
             bridge.verso_pagina('tracciaFinita', indice, esito.get('status', 'fail'),
                                 esito.get('error', ''),
                                 self._url_file(file) if c_era else '',
-                                esito.get('quando', ''), testo)
+                                esito.get('quando', ''), testo,
+                                # Per la libreria: quanto pesa e in che formato.
+                                os.path.getsize(file) if c_era else 0,
+                                os.path.splitext(file)[1].lstrip('.').lower())
             riferisci(forza=True)
             return esito
 
@@ -571,12 +604,68 @@ class Api:
             'finestra': True,
         })
 
+    # ── La libreria di Audio ─────────────────────────────────────────────────
+
+    def libreria(self) -> dict:
+        """I brani gia' scaricati, dal piu' recente: quelli che la sezione
+        Audio mostra all'apertura.
+
+        Vengono dal registro dei download, ma solo quelli il cui file c'e'
+        ancora: un brano cancellato dal disco non e' un brano della libreria.
+        """
+        from server.audio.tagging import leggi_testo
+        from server.state import db
+
+        radice = os.path.dirname(os.path.abspath(db.percorso_db()))
+        brani = []
+        for r in db.get_downloads('audio', limit=500):
+            if (r.get('media_kind') or 'audio') != 'audio':
+                continue
+            file = r.get('file_path') or ''
+            if not os.path.isabs(file):
+                file = os.path.normpath(os.path.join(radice, file))
+            if not os.path.isfile(file):
+                continue
+            brani.append({
+                'titolo': r.get('title') or os.path.basename(file),
+                'artista': r.get('artist') or '',
+                'album': r.get('collection_name') or '',
+                'durata': self._durata(r.get('duration_secs')),
+                'formato': os.path.splitext(file)[1].lstrip('.').lower(),
+                'peso': os.path.getsize(file),
+                'url': self._url_file(file),
+                'miniatura': self._miniatura(r.get('source_id')),
+                'testo': leggi_testo(file),
+            })
+        return {'ok': True, 'brani': brani, **self._spazio()}
+
+    def spazio(self) -> dict:
+        """Quanto spazio resta sul disco dove finisce l'audio."""
+        return {'ok': True, **self._spazio()}
+
+    @staticmethod
+    def _spazio() -> dict:
+        import shutil
+        try:
+            return {'libero': shutil.disk_usage(_audio()).free, 'cartella': _audio()}
+        except OSError:
+            return {'libero': 0, 'cartella': _audio()}
+
+    def apri_cartella(self, dove: str = 'audio', cartella: str = '') -> dict:
+        """Apre nel gestore dei file la cartella dei risultati di una sezione,
+        o quella indicata."""
+        percorso = (cartella or '').strip() or self._partenza(dove)
+        if not percorso or not os.path.isdir(percorso):
+            return {'ok': False, 'errore': i18n.t('burn.no_folder')}
+        _apri_col_sistema(percorso)
+        return {'ok': True}
+
     def apri_scaricato(self, indice: int) -> dict:
         """Apre un file appena scaricato col programma predefinito di Windows."""
         file = getattr(self, '_pronti', {}).get(int(indice), '')
         if not os.path.isfile(file):
             return {'ok': False, 'errore': i18n.t('err.nothing')}
-        os.startfile(file)
+        _apri_col_sistema(file)
         return {'ok': True}
 
     @staticmethod
@@ -769,6 +858,8 @@ class Api:
         return {
             'ok': True,
             'nome': os.path.basename(percorso),
+            # Il video stesso, da guardare nella pagina prima di lavorarci.
+            'video': self._url_file(percorso),
             # Per la stima del tempo dei trattamenti con l'AI.
             'larghezza': info['width'], 'altezza': info['height'],
             'fotogrammi': info['frames'] or 0,
@@ -922,6 +1013,9 @@ class Api:
             os.remove(tagliato)
         bridge.verso_pagina('pixFinito', {
             'file': os.path.basename(dst),
+            # La prova e' uno spezzone: accanto al video intero non starebbe in
+            # sincrono, quindi li' il confronto resta l'immagine.
+            'video': '' if tagliato else self._url_file(dst),
             'confronto': self._url_file(png) if png else '',
             'testo': i18n.t('pix.done', file=os.path.basename(dst)),
         })
@@ -940,7 +1034,14 @@ class Api:
         richiesta = opzioni.get('altezza')
         altezza = px.altezza_obiettivo(
             info, int(richiesta) if richiesta not in (None, '', 'auto') else None, preset)
-        catena = px.catena_filtri(preset, info, altezza)
+        # I tre ritocchi del pannello delle opzioni. Con l'AI non valgono: li'
+        # l'immagine la ridisegna la rete, e la catena di filtri non c'e'.
+        dettaglio = opzioni.get('dettaglio')
+        catena = px.catena_filtri(
+            preset, info, altezza,
+            rumore=bool(opzioni.get('rumore')),
+            stabilizza=bool(opzioni.get('stabilizza')),
+            dettaglio=int(dettaglio) if dettaglio not in (None, '') else None)
         dst = px.nome_uscita(percorso, altezza or info['height'], _rimasterizzati())
 
         totale = info['frames'] or 0
@@ -968,11 +1069,69 @@ class Api:
                                max(info['duration'] / 3, 0.0)) or ''
         bridge.verso_pagina('pixFinito', {
             'file': os.path.basename(dst),
+            # Il risultato, da confrontare nella pagina col video di partenza.
+            'video': self._url_file(dst),
             'confronto': self._url_file(png) if png else '',
             'testo': i18n.t('pix.done', file=os.path.basename(dst)),
         })
 
     # ── Montaggio ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _cartella_timeline(percorso: str) -> str:
+        """Dove stanno i fotogrammi e l'onda di un video: una cartella
+        provvisoria col nome ricavato dal file e dalla sua ultima modifica,
+        cosi' un video cambiato non riusa le immagini di prima."""
+        import hashlib
+        import tempfile
+        impronta = hashlib.sha1(
+            f'{percorso}|{os.path.getmtime(percorso)}'.encode('utf-8')).hexdigest()[:16]
+        return os.path.join(tempfile.gettempdir(), 'mediaflow_timeline', impronta)
+
+    def clip_apri(self, percorso: str) -> dict:
+        """Quello che serve alla pagina per mostrare un video da montare: il
+        video stesso, le sue misure e i fotogrammi della timeline."""
+        bridge.entra('clip')
+        percorso = (percorso or '').strip().strip('"')
+        if not os.path.isfile(percorso):
+            return {'ok': False, 'errore': i18n.t('err.no_file')}
+        px = _pixdex()
+        info = px.probe(percorso)
+        if not info or not px.e_un_filmato(info):
+            return {'ok': False, 'errore': i18n.t('pix.unreadable')}
+        cd = _clipdex()
+        try:
+            fotogrammi = cd.striscia(percorso, self._cartella_timeline(percorso),
+                                     info['duration'])
+        except (OSError, subprocess.SubprocessError):
+            fotogrammi = []
+        return {
+            'ok': True,
+            'nome': os.path.basename(percorso),
+            'video': self._url_file(percorso),
+            'durata': info['duration'],
+            'larghezza': info['width'], 'altezza': info['height'],
+            'fps': round(info['fps'], 2),
+            'peso': info['size'],
+            'audio': (f"{info['audio_codec'].upper()}  ·  {info['audio_rate'] // 1000} kHz"
+                      f"  ·  {'Mono' if info['audio_ch'] == 1 else 'Stereo'}"
+                      if info['has_audio'] else ''),
+            'fotogrammi': [self._url_file(f) for f in fotogrammi],
+        }
+
+    def clip_onda(self, percorso: str) -> dict:
+        """La forma d'onda dell'audio. E' una chiamata a parte perche' su un
+        video lungo ci mette qualche secondo, e la timeline non deve
+        aspettarla per comparire."""
+        percorso = (percorso or '').strip().strip('"')
+        if not os.path.isfile(percorso):
+            return {'ok': False, 'errore': i18n.t('err.no_file')}
+        dst = os.path.join(self._cartella_timeline(percorso), 'onda.png')
+        try:
+            fatta = _clipdex().onda(percorso, dst)
+        except (OSError, subprocess.SubprocessError):
+            fatta = False
+        return {'ok': fatta, 'onda': self._url_file(dst) if fatta else ''}
 
     def clip_esegui(self, opzioni: dict) -> dict:
         bridge.entra('clip')
@@ -1018,9 +1177,19 @@ class Api:
             elif azione == 'taglia':
                 inizio = _leggi_tempo(opzioni.get('da')) or 0.0
                 fine = _leggi_tempo(opzioni.get('a'))
-                dst = cd.nome_uscita(primo, 'ClipDex taglio', cartella=_montaggi(azione))
+                # Contenitore, codec e risoluzione: senza una scelta lo
+                # spezzone resta com'e' l'originale, copiato e non ricodificato.
+                contenitore = (opzioni.get('contenitore') or '').lower()
+                estensione = ('.' + contenitore
+                              if '.' + contenitore in cd.CODEC_PER_CONTENITORE else None)
+                altezza = opzioni.get('altezza')
+                dst = cd.nome_uscita(primo, 'ClipDex taglio', estensione,
+                                     cartella=_montaggi(azione))
                 esito = cd.taglia(primo, dst, inizio, fine,
-                                  preciso=bool(opzioni.get('preciso')))
+                                  preciso=bool(opzioni.get('preciso')),
+                                  codec=(opzioni.get('codec') or '').lower(),
+                                  altezza=int(altezza) if altezza else 0,
+                                  audio=bool(opzioni.get('audio', True)))
             else:                                   # gif, webp
                 dst = cd.nome_uscita(primo, f'ClipDex {azione}',
                                       '.gif' if azione == 'gif' else '.webp',
@@ -1059,14 +1228,57 @@ class Api:
         if not os.path.isfile(srt):
             return {'ok': False, 'errore': i18n.t('sub.no_srt')}
         lista, colori = st.leggi_srt(srt)
+        info = _pixdex().probe(video) or {}
         return {'ok': True, 'video': self._url_file(video),
                 'nome': os.path.basename(video),
+                # Le lingue in cui i sottotitoli esistono: l'originale (vuota)
+                # e le traduzioni che hanno il loro .srt accanto al video.
+                'lingue': [codice or '' for codice, _p in st.srt_del_video(video)],
+                # I colori fra cui scegliere la voce di una riga.
+                'tavolozza': st.COLORI,
+                'scheda': {'altezza': info.get('height', 0), 'fps': info.get('fps', 0),
+                           'peso': info.get('size', 0),
+                           'durata': self._durata(info.get('duration'))},
                 'riquadri': [{'inizio': r.inizio, 'fine': r.fine,
                               'righe': [{'testo': t, 'colore': colori.get(p, ''),
                                          'lineetta': l} for p, t, l in r.righe]}
                              for r in lista]}
 
-    def sub_aggiorna(self, percorso: str, riquadri: list) -> dict:
+    def sub_esporta(self, percorso: str, riquadri: list, formato: str = 'srt',
+                    lingua: str = '') -> dict:
+        """Scrive i sottotitoli in un file a parte, dove si sceglie: SRT o
+        WebVTT, nella lingua originale (coi riquadri com'e' adesso nell'editor,
+        anche non ancora aggiornati) o in una traduzione gia' fatta."""
+        from server.video import sottotitoli as st
+
+        video = (percorso or '').strip().strip('"')
+        if not os.path.isfile(video):
+            return {'ok': False, 'errore': i18n.t('err.no_file')}
+        formato = 'vtt' if (formato or '').lower() == 'vtt' else 'srt'
+        try:
+            if lingua:
+                srt = st.nome_srt(video, lingua)
+                if not os.path.isfile(srt):
+                    return {'ok': False, 'errore': i18n.t('sub.no_srt')}
+                lista, colori = st.leggi_srt(srt)
+            else:
+                lista, colori = st.riquadri_da_pagina(riquadri or [])
+            base = os.path.splitext(os.path.basename(video))[0]
+            proposto = f"{base}{'.' + lingua if lingua else ''}.{formato}"
+            scelta = bridge.attuale().create_file_dialog(
+                _DLG_SALVA, directory=os.path.dirname(video), save_filename=proposto)
+            if not scelta:
+                return {'ok': True, 'file': ''}
+            destinazione = scelta if isinstance(scelta, str) else scelta[0]
+            if not destinazione.lower().endswith('.' + formato):
+                destinazione += '.' + formato
+            (st.scrivi_vtt if formato == 'vtt' else st.scrivi_srt)(lista, destinazione, colori)
+        except (OSError, ValueError, KeyError) as exc:
+            return {'ok': False, 'errore': str(exc)}
+        return {'ok': True, 'file': destinazione,
+                'testo': i18n.t('sub.esportato', file=os.path.basename(destinazione))}
+
+    def sub_aggiorna(self, percorso: str, riquadri: list, impressa: bool = True) -> dict:
         """Salva le correzioni nel .srt e rifa' il resto: la traduzione, le
         tracce nel file, la copia impressa. Il salvataggio e' immediato; il
         resto gira in un thread, perche' la copia impressa costa minuti."""
@@ -1083,14 +1295,14 @@ class Api:
         except (OSError, ValueError, KeyError) as exc:
             self._posto.libera()
             return {'ok': False, 'errore': str(exc)}
-        self._in_thread(self._sub_davvero, video)
+        self._in_thread(self._sub_davvero, video, bool(impressa))
         return {'ok': True, 'avviato': True}
 
-    def _sub_davvero(self, video: str) -> None:
+    def _sub_davvero(self, video: str, impressa: bool = True) -> None:
         from server.video import sottotitoli as st
 
         bridge.verso_pagina('iniziaLavoro', 0)
-        st.riscrivi(video)
+        st.riscrivi(video, impressa)
         bridge.verso_pagina('subFinito', {
             'ok': True,
             'video': self._url_file(video),

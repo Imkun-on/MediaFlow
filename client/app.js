@@ -70,6 +70,8 @@ function registraSezione(nome, parti) {
   if (parti.traduci) TRADUCI[nome] = parti.traduci;
   if (parti.scorciatoia) SCORCIATOIE[nome] = parti.scorciatoia;
   if (parti.sottosezione) SOTTOSEZIONI[nome] = parti.sottosezione;
+  // Quale sottosezione e' aperta prima che se ne scelga una.
+  if (parti.predefinita) SOTTO_ATTIVA[nome] = parti.predefinita;
 }
 
 function censisciSezioni() {
@@ -98,24 +100,13 @@ function traduciPagina() {
 
 /* ── Cambio sezione ───────────────────────────────────────────────────────── */
 
-/* Accende nel menu la voce della sezione aperta. Se la sezione ha
- * sottosezioni si accende la sottovoce, e la voce di gruppo sopra resta
- * segnata (``dentro``) e aperta. */
+/* Accende lo strumento della sezione aperta, e nella testata ne scrive il
+ * nome. Se la sezione ha sottosezioni (le linguette di Montaggio) si accende
+ * anche quella aperta. */
 function aggiornaMenu() {
   $$('.voce[data-va]').forEach((v) => v.classList.toggle('attiva',
     v.dataset.va === SEZIONE && (!v.dataset.op || v.dataset.op === SOTTO_ATTIVA[SEZIONE])));
-  $$('.voce.voce-gruppo').forEach((g) => {
-    const dentro = g.dataset.gruppo === SEZIONE;
-    g.classList.toggle('dentro', dentro);
-    if (dentro) apriGruppo(g, true);
-  });
-}
-
-function apriGruppo(g, aperto) {
-  g.classList.toggle('aperto', aperto);
-  g.setAttribute('aria-expanded', String(aperto));
-  const sotto = document.querySelector('.sottomenu[data-di="' + g.dataset.gruppo + '"]');
-  if (sotto) sotto.classList.toggle('aperto', aperto);
+  $('#briciola').textContent = t('menu.' + SEZIONE);
 }
 
 function cambiaSezione(nome, immediato, sottosezione) {
@@ -148,7 +139,7 @@ function cambiaSezione(nome, immediato, sottosezione) {
   }
 }
 
-/* La targhetta accanto alla voce del menu.
+/* Il puntino sull'icona dello strumento.
  *
  * E' cio' che ha preso il posto della spia unica del diario. Un lavoro alla
  * volta puo' essere partito in una stanza in cui adesso non si sta: senza
@@ -163,6 +154,17 @@ function aggiornaVoci() {
     tg.className = 'targhetta-menu ' + (TONO[stato] || 'spenta');
     tg.textContent = TESTO[stato] ? t(TESTO[stato]) : '';
   });
+
+  // Lo stesso, detto per esteso: nella testata la pillola che riporta alla
+  // stanza che lavora, in fondo la barra di stato.
+  const attiva = Object.values(SEZIONI).find((s) => s.stato === 'working');
+  const frase = attiva ? t('testata.lavoro') + '  ·  ' + t('menu.' + attiva.nome) : '';
+  const pillola = $('#pillola-lavori');
+  pillola.hidden = !attiva;
+  pillola.dataset.va = attiva ? attiva.nome : '';
+  $('#pillola-testo').textContent = frase;
+  $('#stato-testo').textContent = frase || t('stato.pronto');
+  $('#stato-punto').classList.toggle('lavora', Boolean(attiva));
 }
 
 /* ── La porta da cui entra tutto quello che dice Python ───────────────────── */
@@ -203,6 +205,7 @@ ascolta('cambiaStato', (s, stato) => {
   if (!inCorso) Object.values(RIABILITA).forEach((fn) => fn());
 
   s.avanzamento.classList.toggle('visibile', inCorso);
+  $('#stato-avanzo').hidden = true;
   if (inCorso) {
     // La barra riparte da zero, non da un valore finto: il primo numero vero
     // arriva dal motore entro una frazione di secondo.
@@ -244,6 +247,17 @@ ascolta('avanzaLavoro', (s, fatte, totale, frazione, testo) => {
   const conteggio = totale ? t('lavoro.avanzo', { fatte, totale }) : '';
   s.testo.textContent =
     [testo || '', conteggio].filter(Boolean).join('  ·  ') || t('status.working') + '…';
+
+  // Lo stesso numero nella barra di stato, che si vede da qualunque stanza.
+  // Se il motore non sa quanto manca li' non compare niente: meglio nessuna
+  // percentuale che una inventata.
+  const quota = noto ? Math.max(0, Math.min(1, frazione))
+    : totale ? fatte / totale : null;
+  $('#stato-avanzo').hidden = quota === null;
+  if (quota !== null) {
+    $('#stato-cursa').style.width = (quota * 100).toFixed(1) + '%';
+    $('#stato-percento').textContent = Math.round(quota * 100) + '%';
+  }
 });
 
 ascolta('mostraRiepilogo', (s, dati) => {
@@ -446,12 +460,13 @@ function passoAvvio() {
  * I 500 ms minimi non sono un'attesa finta: su una macchina veloce la pagina
  * e' pronta in un attimo, e un velo che appare e sparisce in cinquanta
  * millesimi si vede come uno sfarfallio, non come un caricamento. */
-/* La spia sotto il marchio: dice se YouTube vede l'IP di casa o quello di
- * Tor. Si interroga Python ogni pochi secondi, sempre: Tor puo' cadere e
- * ripartire anche a meta' sessione, e la spia deve seguirlo. */
-/* La spia di FFmpeg sta accanto a quella di Tor e compare solo quando ha
+/* La spia nella barra di stato e' quella di FFmpeg, e compare solo quando ha
  * qualcosa da dire: mentre lo si scarica, al primo avvio, o se non ci si e'
- * riusciti. */
+ * riusciti.
+ *
+ * Qui accanto c'era anche quella di Tor, ed e' stata tolta: Tor continua a
+ * partire e a nascondere l'IP come prima, ma senza dirlo. Se non e'
+ * raggiungibile lo dice la finestra d'errore del lavoro che non parte. */
 async function spiaFfmpeg() {
   const spia = document.getElementById('spia-ffmpeg');
   if (!spia) return;
@@ -464,18 +479,9 @@ async function spiaFfmpeg() {
   spia.title = errore ? s.errore : t('ffmpeg.spiega');
 }
 
-function sorvegliaTor() {
-  const spia = document.getElementById('spia-tor');
-  if (!spia) return;
+function sorvegliaFfmpeg() {
   const giro = async () => {
-    try {
-      const s = await window.pywebview.api.stato_tor();
-      const fase = s.fase === 'pronto' ? 'pronto' : s.fase === 'errore' ? 'errore' : 'avvio';
-      spia.dataset.fase = fase;
-      spia.querySelector('.spia-tor-testo').textContent = t('tor.' + fase);
-      spia.title = fase === 'errore' ? s.errore : t('tor.spiega');
-    } catch (_) { /* il ponte non risponde: si riprova al giro dopo */ }
-    try { await spiaFfmpeg(); } catch (_) { /* come sopra */ }
+    try { await spiaFfmpeg(); } catch (_) { /* il ponte non risponde: si riprova al giro dopo */ }
     setTimeout(giro, 3000);
   };
   giro();
@@ -526,15 +532,6 @@ function avvia() {
     passoAvvio();                     // 3. testi e cartelle sono arrivati
     TESTI = dati.testi;
 
-    // Il video di sfondo, se il file e' sul disco. Si aggiunge solo dopo che
-    // il primo fotogramma e' pronto: senza, si vedrebbe un rettangolo nero
-    // coprire i gradienti per il tempo del caricamento.
-    if (dati.sfondo) {
-      const v = $('#video-sfondo');
-      v.addEventListener('loadeddata', () => v.classList.add('acceso'), { once: true });
-      v.src = dati.sfondo;
-    }
-
     window.initAudio();
     window.initVideo();
     passoAvvio();                     // 4. Audio e Video sono pronte
@@ -548,13 +545,13 @@ function avvia() {
     if (window.potenziaTendine) window.potenziaTendine();
     passoAvvio();                     // 6. tutto e' nella lingua giusta
     cambiaSezione('audio', true);
-    sorvegliaTor();
+    sorvegliaFfmpeg();
 
     $$('.voce[data-va]').forEach((v) =>
       v.addEventListener('click', () => cambiaSezione(v.dataset.va, false, v.dataset.op)));
-    // La voce di gruppo non porta da nessuna parte: apre e chiude la tendina.
-    $$('.voce.voce-gruppo').forEach((g) =>
-      g.addEventListener('click', () => apriGruppo(g, !g.classList.contains('aperto'))));
+    $('#pillola-lavori').addEventListener('click', (e) => {
+      if (e.currentTarget.dataset.va) cambiaSezione(e.currentTarget.dataset.va);
+    });
 
     // I campi coi percorsi non si scrivono: si cliccano, e si apre la finestra
     // di Windows per scegliere. Il bottone «Scegli» accanto e' sparito: il

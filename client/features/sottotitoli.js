@@ -5,31 +5,52 @@
  * correzione scritta nell'elenco si vede sul video nello stesso istante, senza
  * salvare e senza rifare niente.
  *
- * Un bottone solo, Aggiorna: salva il .srt, rifa' dal testo corretto la
- * traduzione (se c'era), rimette le tracce nel file e ridisegna la copia
- * impressa. Si corregge la lingua originale; la traduzione la segue.
+ * Chi parla e' un colore
+ *     Nel file ogni voce ha il suo colore, sempre lo stesso per tutto il
+ *     video, e non ha un nome: qui si chiamano Voce 1, Voce 2, nell'ordine in
+ *     cui compaiono. Cambiare la voce di una riga vuol dire cambiarle colore;
+ *     una riga senza colore e' bianca - una persona sola, o un suono.
+ *
+ * Due bottoni
+ *     Aggiorna salva il .srt, rifa' dal testo corretto la traduzione (se
+ *     c'era), rimette le tracce nel file e, se l'interruttore e' acceso,
+ *     ridisegna la copia impressa. Si corregge la lingua originale; la
+ *     traduzione la segue.
+ *     Esporta scrive una copia dei sottotitoli dove si sceglie, in SRT o in
+ *     WebVTT: nella lingua originale com'e' adesso nell'editor, o in una
+ *     traduzione gia' fatta.
  */
 
 let S_FILE = '';
 let S_RIQUADRI = [];        // [{inizio, fine, righe: [{testo, colore, lineetta}]}]
 let S_SPORCO = false;       // ci sono correzioni non ancora aggiornate
 let S_ATTIVO = -1;          // il riquadro a schermo in questo momento
+let S_TAVOLOZZA = [];       // i colori fra cui scegliere una voce nuova
+let S_SCHEDA = null;        // le misure del video aperto
+
+const S$ = (id) => document.getElementById(id);
 
 function initSottotitoli() {
-  const $ = window.$;
-  $('#s-file').addEventListener('click', async () => {
+  S$('s-file').addEventListener('click', async () => {
     const e = await window.pywebview.api.scegli_file(false, 'video');
     if (!e.ok) { window.avvisa(e.errore, 'fail'); return; }
-    if (!e.ok || !e.file.length) return;
+    if (!e.file.length) return;
     apriSottotitoli(e.file[0]);
   });
-  $('#s-aggiorna').addEventListener('click', aggiornaSottotitoli);
+  S$('s-aggiorna').addEventListener('click', aggiornaSottotitoli);
+  S$('s-esporta').addEventListener('click', esportaSottotitoli);
+  S$('s-mostra').addEventListener('change', disegnaTesto);
+  S$('s-nuovo').addEventListener('click', () => {
+    if (!S_FILE) return;
+    if (S_RIQUADRI.length) aggiungiDopo(S_RIQUADRI.length - 1); else aggiungiPrimo();
+  });
   svuotaSottotitoli();
 
   window.registraSezione('sub', {
     riabilita: statoBottoni,
     scorciatoia: aggiornaSottotitoli,
     traduci: () => {
+      S$('s-nuovo').title = window.t('sub.nuovo');
       if (!S_FILE) svuotaSottotitoli();
       aggiornaNota();
     },
@@ -43,39 +64,123 @@ async function apriSottotitoli(percorso) {
   if (!e.ok) { window.avvisa(e.errore, 'fail'); return; }
   S_FILE = percorso;
   S_RIQUADRI = e.riquadri;
+  S_TAVOLOZZA = e.tavolozza || [];
+  S_SCHEDA = { nome: e.nome, ...(e.scheda || {}) };
   S_ATTIVO = -1;
   S_SPORCO = false;
-  window.$('#s-file').value = e.nome;
-  window.$('#s-nome').textContent = e.nome;
+  S$('s-file').value = e.nome;
+  S$('s-nome').textContent = e.nome;
+
+  // Le lingue in cui i sottotitoli ci sono: l'originale e le traduzioni.
+  const lingua = S$('s-lingua');
+  lingua.innerHTML = '';
+  (e.lingue && e.lingue.length ? e.lingue : ['']).forEach((codice) => {
+    const o = document.createElement('option');
+    o.value = codice;
+    const chiave = 'sub.lingua.' + (codice || 'originale');
+    o.textContent = window.t(chiave) === chiave ? codice.toUpperCase() : window.t(chiave);
+    lingua.appendChild(o);
+  });
+
   preparaVideo(e.video);
   disegnaElenco();
+  disegnaSorgenteSub();
   aggiornaNota();
 }
 
 function svuotaSottotitoli() {
-  const schermo = window.$('#s-schermo');
+  const schermo = S$('s-schermo');
   schermo.innerHTML = '';
   schermo.appendChild(window.statoVuoto(window.t('sub.video.empty')));
-  const elenco = window.$('#s-elenco');
+  const elenco = S$('s-elenco');
   elenco.innerHTML = '';
   elenco.appendChild(window.statoVuoto(window.t('sub.list.empty')));
-  window.$('#s-nome').textContent = '';
+  S$('s-nome').textContent = '';
+  S$('s-voci').innerHTML = '';
+  S$('s-quanti').textContent = '0';
+  S$('s-conteggio').textContent = '';
+  disegnaSorgenteSub();
   statoBottoni();
 }
 
 function statoBottoni() {
-  window.$('#s-aggiorna').disabled = !S_FILE;
+  S$('s-aggiorna').disabled = !S_FILE;
+  S$('s-esporta').disabled = !S_FILE;
 }
 
 function aggiornaNota() {
-  window.$('#s-nota').textContent = S_SPORCO ? window.t('sub.modificato') : '';
+  S$('s-nota').textContent = S_SPORCO ? window.t('sub.modificato') : '';
   statoBottoni();
+}
+
+function disegnaSorgenteSub() {
+  const box = S$('s-sorgente');
+  box.innerHTML = '';
+  if (!S_FILE || !S_SCHEDA) {
+    box.appendChild(window.el('p', 'nota-riga', window.t('sub.sorgente.vuoto')));
+    return;
+  }
+  const capo = window.el('div', 'scelto-capo');
+  capo.appendChild(window.icona('i-video', 'icona grande'));
+  const nomi = window.el('div', 'brano-nomi');
+  nomi.appendChild(window.el('strong', '', S_SCHEDA.nome));
+  nomi.appendChild(window.el('span', '', [
+    S_SCHEDA.altezza ? S_SCHEDA.altezza + 'p' : '',
+    S_SCHEDA.fps ? Math.round(S_SCHEDA.fps) + ' fps' : '',
+    S_SCHEDA.peso ? pesoLeggibile(S_SCHEDA.peso) : '',
+    S_SCHEDA.durata || '',
+  ].filter(Boolean).join('  ·  ')));
+  capo.appendChild(nomi);
+  box.appendChild(capo);
+}
+
+/* ── Le voci ───────────────────────────────────────────────────────────── */
+
+/* I colori in uso, nell'ordine in cui compaiono: sono le voci del video. */
+function vociInUso() {
+  const voci = [];
+  S_RIQUADRI.forEach((r) => r.righe.forEach((rg) => {
+    const c = (rg.colore || '').toUpperCase();
+    if (c && !voci.includes(c)) voci.push(c);
+  }));
+  return voci;
+}
+
+function nomeVoce(colore, voci) {
+  const n = voci.indexOf((colore || '').toUpperCase());
+  return n < 0 ? window.t('sub.voce.nessuna') : window.t('sub.voce', { n: n + 1 });
+}
+
+/* La voce dopo quella di una riga: le voci del video, poi una nuova presa dal
+ * primo colore libero, poi nessuna, e si ricomincia. */
+function voceSuccessiva(colore) {
+  const voci = vociInUso();
+  const nuova = S_TAVOLOZZA.find((c) => !voci.includes(c.toUpperCase()));
+  const giro = voci.concat(nuova ? [nuova.toUpperCase()] : [], ['']);
+  return giro[(giro.indexOf((colore || '').toUpperCase()) + 1) % giro.length];
+}
+
+function disegnaVoci() {
+  const voci = vociInUso();
+  const box = S$('s-voci');
+  box.innerHTML = '';
+  voci.forEach((colore) => {
+    const voce = window.el('span', 's-voce');
+    const punto = window.el('i', 's-punto');
+    punto.style.background = colore;
+    voce.appendChild(punto);
+    voce.appendChild(window.el('span', '', nomeVoce(colore, voci)));
+    box.appendChild(voce);
+  });
+  S$('s-quanti').textContent = String(S_RIQUADRI.length);
+  S$('s-conteggio').textContent = S_FILE
+    ? window.t('sub.conteggio', { n: S_RIQUADRI.length, voci: Math.max(voci.length, 1) }) : '';
 }
 
 /* ── Il video, e i sottotitoli sopra ───────────────────────────────────── */
 
 function preparaVideo(url) {
-  const schermo = window.$('#s-schermo');
+  const schermo = S$('s-schermo');
   schermo.innerHTML = '';
   const cornice = document.createElement('div');
   cornice.className = 's-cornice';
@@ -117,20 +222,15 @@ function preparaVideo(url) {
   video.src = url;
 }
 
-function riquadriAttuali() {
-  return S_RIQUADRI;
-}
-
 function disegnaTesto() {
-  const video = document.getElementById('s-video');
-  const box = document.getElementById('s-testo');
+  const video = S$('s-video');
+  const box = S$('s-testo');
   if (!video || !box) return;
   const t = video.currentTime;
-  const riquadri = riquadriAttuali();
-  const i = riquadri.findIndex((r) => r.inizio <= t && t < r.fine);
+  const i = S_RIQUADRI.findIndex((r) => r.inizio <= t && t < r.fine);
   box.innerHTML = '';
-  if (i >= 0) {
-    riquadri[i].righe.forEach((riga) => {
+  if (i >= 0 && S$('s-mostra').checked) {
+    S_RIQUADRI[i].righe.forEach((riga) => {
       const d = document.createElement('div');
       d.textContent = (riga.lineetta ? '– ' : '') + riga.testo;
       d.style.color = riga.colore || '#FFFFFF';
@@ -143,7 +243,7 @@ function disegnaTesto() {
   }
 }
 
-/* ── L'elenco delle battute ────────────────────────────────────────────── */
+/* ── L'elenco dei segmenti ─────────────────────────────────────────────── */
 
 function tempo(secondi) {
   const m = Math.floor(secondi / 60);
@@ -164,14 +264,14 @@ function sporca() {
 }
 
 function disegnaElenco() {
-  const elenco = window.$('#s-elenco');
+  const elenco = S$('s-elenco');
   elenco.innerHTML = '';
-  const riquadri = riquadriAttuali();
-  if (!riquadri.length) {
+  disegnaVoci();
+  if (!S_RIQUADRI.length) {
     elenco.appendChild(window.statoVuoto(window.t('sub.list.empty')));
     return;
   }
-  riquadri.forEach((r, i) => elenco.appendChild(rigaElenco(r, i)));
+  S_RIQUADRI.forEach((r, i) => elenco.appendChild(rigaElenco(r, i)));
   evidenzia(false);
 }
 
@@ -180,9 +280,15 @@ function rigaElenco(r, i) {
   riga.className = 's-battuta';
   riga.dataset.i = i;
 
-  const tempi = document.createElement('div');
-  tempi.className = 's-tempi';
-  [['inizio', r.inizio], ['fine', r.fine]].forEach(([chiave, valore]) => {
+  // In testa: il numero, i due tempi (che si scrivono), e come toglierlo.
+  const capo = window.el('div', 's-capo');
+  const vaiQui = window.el('button', 's-numero', String(i + 1).padStart(2, '0'));
+  vaiQui.type = 'button';
+  vaiQui.title = window.t('sub.vai');
+  vaiQui.addEventListener('click', (e) => { e.stopPropagation(); vai(r.inizio, true); });
+  capo.appendChild(vaiQui);
+  [['inizio', r.inizio], ['fine', r.fine]].forEach(([chiave, valore], k) => {
+    if (k) capo.appendChild(window.el('span', 's-freccia', '→'));
     const campo = document.createElement('input');
     campo.className = 's-tempo';
     campo.value = tempo(valore);
@@ -194,13 +300,33 @@ function rigaElenco(r, i) {
       campo.value = tempo(v);
       sporca();
     });
-    tempi.appendChild(campo);
+    capo.appendChild(campo);
   });
-  riga.appendChild(tempi);
+  const azioni = window.el('div', 's-azioni');
+  azioni.appendChild(bottoncino('', '+', () => aggiungiDopo(i), window.t('sub.add')));
+  azioni.appendChild(bottoncino('', '×', () => togli(i), window.t('sub.delete')));
+  capo.appendChild(azioni);
+  riga.appendChild(capo);
 
-  const testi = document.createElement('div');
-  testi.className = 's-testi';
+  const voci = vociInUso();
   r.righe.forEach((rg) => {
+    // Chi dice la riga: un bottone col suo colore, che a ogni clic passa alla
+    // voce successiva.
+    const voce = window.el('button', 's-voce');
+    voce.type = 'button';
+    voce.title = window.t('sub.voce.cambia');
+    const punto = window.el('i', 's-punto');
+    punto.style.background = rg.colore || 'var(--t2)';
+    voce.appendChild(punto);
+    voce.appendChild(window.el('span', '', nomeVoce(rg.colore, voci)));
+    voce.addEventListener('click', (e) => {
+      e.stopPropagation();
+      rg.colore = voceSuccessiva(rg.colore);
+      sporca();
+      disegnaElenco();
+    });
+    riga.appendChild(voce);
+
     // Un'area di testo e non un campo: una riga da 40 caratteri non ci sta
     // nella colonna, e tagliata non si potrebbe correggere. Cresce con la
     // frase, e Invio non va a capo - un sottotitolo e' una riga.
@@ -209,7 +335,6 @@ function rigaElenco(r, i) {
     campo.rows = 1;
     campo.value = rg.testo;
     campo.spellcheck = false;
-    campo.style.color = rg.colore || '';
     const altezza = () => { campo.style.height = 'auto'; campo.style.height = campo.scrollHeight + 'px'; };
     campo.addEventListener('input', () => {
       campo.value = campo.value.replace(/\n/g, ' ');
@@ -218,19 +343,13 @@ function rigaElenco(r, i) {
       sporca();
     });
     campo.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.ctrlKey) e.preventDefault(); });
+    // Entrando in una riga il video si ferma li': si corregge quello che si vede.
+    campo.addEventListener('focus', () => vai(r.inizio, false));
     requestAnimationFrame(altezza);
-    testi.appendChild(campo);
+    riga.appendChild(campo);
   });
-  riga.appendChild(testi);
 
-  const azioni = document.createElement('div');
-  azioni.className = 's-azioni';
-  azioni.appendChild(bottoncino('i-avvia', '', () => vai(r.inizio, true)));
-  azioni.appendChild(bottoncino('', '+', () => aggiungiDopo(i), window.t('sub.add')));
-  azioni.appendChild(bottoncino('', '×', () => togli(i), window.t('sub.delete')));
-  riga.appendChild(azioni);
-
-  // Un clic sulla riga (non nei campi) porta il video a quella battuta.
+  // Un clic sul segmento (non nei campi) porta il video a quel punto.
   riga.addEventListener('click', (e) => {
     if (e.target.closest('input, textarea, button')) return;
     vai(r.inizio, false);
@@ -252,37 +371,47 @@ function bottoncino(icona, testo, azione, titolo) {
 }
 
 function vai(secondi, suona) {
-  const video = document.getElementById('s-video');
+  const video = S$('s-video');
   if (!video) return;
+  if (!suona) video.pause();
   video.currentTime = secondi + 0.01;
   if (suona) video.play();
   disegnaTesto();
 }
 
 function aggiungiDopo(i) {
-  const riquadri = riquadriAttuali();
-  const r = riquadri[i];
-  const dopo = riquadri[i + 1];
+  const r = S_RIQUADRI[i];
+  const dopo = S_RIQUADRI[i + 1];
   const inizio = r.fine + 0.05;
   const fine = dopo ? Math.max(inizio + 0.5, dopo.inizio - 0.05) : inizio + 2;
-  riquadri.splice(i + 1, 0, {
+  S_RIQUADRI.splice(i + 1, 0, {
     inizio, fine,
     righe: [{ testo: '', colore: r.righe[0] ? r.righe[0].colore : '', lineetta: false }],
   });
   sporca();
   disegnaElenco();
-  const campo = window.$('#s-elenco').querySelector('[data-i="' + (i + 1) + '"] .s-riga');
+  const campo = S$('s-elenco').querySelector('[data-i="' + (i + 1) + '"] .s-riga');
   if (campo) campo.focus();
 }
 
+/* Il primo segmento di un video che non ne ha: due secondi, dal punto in cui
+ * si e'. */
+function aggiungiPrimo() {
+  const video = S$('s-video');
+  const inizio = video ? video.currentTime : 0;
+  S_RIQUADRI.push({ inizio, fine: inizio + 2, righe: [{ testo: '', colore: '', lineetta: false }] });
+  sporca();
+  disegnaElenco();
+}
+
 function togli(i) {
-  riquadriAttuali().splice(i, 1);
+  S_RIQUADRI.splice(i, 1);
   sporca();
   disegnaElenco();
 }
 
 function evidenzia(scorri) {
-  const elenco = window.$('#s-elenco');
+  const elenco = S$('s-elenco');
   elenco.querySelectorAll('.s-battuta.attiva').forEach((e) => e.classList.remove('attiva'));
   if (S_ATTIVO < 0) return;
   const riga = elenco.querySelector('[data-i="' + S_ATTIVO + '"]');
@@ -295,14 +424,24 @@ function evidenzia(scorri) {
   }
 }
 
-/* ── Aggiornare ───────────────────────────────────────────────────────── */
+/* ── Aggiornare, esportare ────────────────────────────────────────────── */
 
 async function aggiornaSottotitoli() {
   if (!S_FILE) return;
-  const e = await window.pywebview.api.sub_aggiorna(S_FILE, S_RIQUADRI);
+  const e = await window.pywebview.api.sub_aggiorna(S_FILE, S_RIQUADRI, S$('s-impressa').checked);
   if (!e.ok) { window.errore(e.errore, 'sub'); return; }
   S_SPORCO = false;
   aggiornaNota();
+}
+
+async function esportaSottotitoli() {
+  if (!S_FILE) return;
+  const e = await window.pywebview.api.sub_esporta(
+    S_FILE, S_RIQUADRI, S$('s-formato').value, S$('s-lingua').value);
+  if (!e.ok) { window.avvisa(e.errore, 'fail'); return; }
+  // Senza un file, la finestra di salvataggio e' stata chiusa: non e' successo
+  // niente e non c'e' niente da dire.
+  if (e.file) window.avvisa(e.testo, 'ok');
 }
 
 /* A lavoro finito il video si ricarica, dal punto in cui era: la traccia nel
@@ -310,7 +449,7 @@ async function aggiornaSottotitoli() {
 window.ascolta('subFinito', (s, dati) => {
   s.testo.textContent = dati.testo;
   window.avvisa(dati.testo, dati.ok ? 'ok' : 'fail');
-  const video = document.getElementById('s-video');
+  const video = S$('s-video');
   if (video && dati.video) {
     const dove = video.currentTime;
     video.addEventListener('loadedmetadata', () => { video.currentTime = dove; }, { once: true });
