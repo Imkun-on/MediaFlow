@@ -14,6 +14,7 @@ let D_FILE = '';
 let D_BATTUTE = [];         // [{id, inizio, fine, colore, testo, nuovo}]
 let D_STIMA = { base: 240, per_carattere: 3.6 };
 let D_URL = { originale: '', doppiato: '' };
+let D_FATTE = '{}';         // le riscritture gia' doppiate, per non chiedere due volte
 
 function initDoppiaggio() {
   const $ = window.$;
@@ -31,6 +32,17 @@ function initDoppiaggio() {
   window.registraSezione('dop', {
     riabilita: statoDoppia,
     scorciatoia: doppia,
+    // Testi riscritti ma non ancora doppiati: uscendo andrebbero persi.
+    inSospeso: () => Boolean(D_FILE) && Object.keys(riscritture()).length > 0
+      && JSON.stringify(riscritture()) !== D_FATTE,
+    azzera: () => {
+      D_FILE = ''; D_BATTUTE = []; D_URL = { originale: '', doppiato: '' }; D_FATTE = '{}';
+      $('#d-file').value = '';
+      $('#d-vedi-originale').hidden = true;
+      $('#d-vedi-doppiato').hidden = true;
+      svuotaDoppiaggio();
+      aggiornaStima();
+    },
     traduci: () => {
       if (!D_FILE) svuotaDoppiaggio();
       aggiornaStima();
@@ -45,6 +57,7 @@ async function apriDoppiaggio(percorso) {
   D_BATTUTE = e.battute;
   D_STIMA = e.stima || D_STIMA;
   D_URL = { originale: e.video, doppiato: e.doppiato || '' };
+  D_FATTE = JSON.stringify(riscritture());
   window.$('#d-file').value = e.nome;
   mostraVideoDop(D_URL.doppiato ? 'doppiato' : 'originale');
   disegnaBattute();
@@ -175,6 +188,7 @@ async function doppia() {
 window.ascolta('dopFinito', (s, dati) => {
   s.testo.textContent = dati.testo;
   window.avvisa(dati.testo, dati.ok ? 'ok' : 'fail');
+  if (dati.ok) D_FATTE = JSON.stringify(riscritture());
   if (dati.video) {
     D_URL.doppiato = dati.video;
     mostraVideoDop('doppiato');

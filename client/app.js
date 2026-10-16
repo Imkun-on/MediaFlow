@@ -64,8 +64,14 @@ const SCORCIATOIE = {};
 // Le sezioni con sottosezioni (Montaggio): chi le apre, e quale e' aperta.
 const SOTTOSEZIONI = {};
 const SOTTO_ATTIVA = {};
+// Come una sezione torna alla sua schermata di partenza, e se ha qualcosa di
+// non salvato che uscendo andrebbe perso.
+const AZZERA = {};
+const IN_SOSPESO = {};
 
 function registraSezione(nome, parti) {
+  if (parti.azzera) AZZERA[nome] = parti.azzera;
+  if (parti.inSospeso) IN_SOSPESO[nome] = parti.inSospeso;
   if (parti.riabilita) RIABILITA[nome] = parti.riabilita;
   if (parti.traduci) TRADUCI[nome] = parti.traduci;
   if (parti.scorciatoia) SCORCIATOIE[nome] = parti.scorciatoia;
@@ -109,7 +115,53 @@ function aggiornaMenu() {
   $('#briciola').textContent = t('menu.' + SEZIONE);
 }
 
-function cambiaSezione(nome, immediato, sottosezione) {
+/* Riporta una sezione alla sua schermata di partenza: niente file aperto,
+ * niente risultato dell'operazione di prima, barra spenta.
+ *
+ * Si fa quando la si lascia, cosi' ogni operazione comincia da una schermata
+ * pulita invece che sopra i resti della precedente. Una sezione che sta
+ * lavorando non si tocca: il lavoro continua, e al ritorno lo si trova li'. */
+function azzeraSezione(nome) {
+  const s = SEZIONI[nome];
+  if (!s || s.stato === 'working') return;
+  s.radice.querySelectorAll('video').forEach((v) => v.pause());
+  if (AZZERA[nome]) AZZERA[nome]();
+  if (s.avanzamento) s.avanzamento.classList.remove('visibile');
+  if (s.barra) { s.barra.classList.remove('attesa'); s.barra.style.width = '0%'; }
+  if (s.testo) s.testo.textContent = '';
+  if (s.stato !== 'idle') {
+    s.stato = 'idle';
+    if (s.spia) s.spia.className = 'spia ';
+    if (s.parola) s.parola.textContent = t('status.idle');
+    aggiornaVoci();
+  }
+}
+
+function cambiaSezione(nome, immediato, sottosezione, confermato) {
+  // Si lascia la sezione aperta se se ne apre un'altra, o un'altra linguetta
+  // della stessa (Montaggio).
+  const vecchia = SEZIONE;
+  const lascia = nome !== vecchia
+    || Boolean(sottosezione && sottosezione !== SOTTO_ATTIVA[nome]);
+  const sv = SEZIONI[vecchia];
+  if (lascia && sv && sv.stato !== 'working') {
+    // Correzioni non ancora salvate: uscendo andrebbero perse, quindi prima
+    // si chiede. Le altre sezioni non hanno niente da perdere e si azzerano.
+    if (!confermato && IN_SOSPESO[vecchia] && IN_SOSPESO[vecchia]()) {
+      finestra({
+        icona: 'avviso', titolo: t('esci.titolo'),
+        corpo: [paragrafo(t('esci.testo'))],
+        azioni: [
+          { testo: t('esci.resta'), tono: 'nudo' },
+          { testo: t('esci.esci'), tono: 'pieno',
+            azione: () => cambiaSezione(nome, immediato, sottosezione, true) },
+        ],
+      });
+      return;
+    }
+    azzeraSezione(vecchia);
+  }
+
   if (sottosezione) {
     SOTTO_ATTIVA[nome] = sottosezione;
     if (SOTTOSEZIONI[nome]) SOTTOSEZIONI[nome](sottosezione);
@@ -200,13 +252,13 @@ ascolta('cambiaStato', (s, stato) => {
   // i comandi di tutte le sezioni, non solo di quella che lavora. I bottoni
   // della finestra restano accesi: e' dentro .corpo che si comanda, e una
   // finestra che non si lascia chiudere sarebbe una trappola.
-  const inCorso = stato === 'working';
+  const inCorso = Object.values(SEZIONI).some((x) => x.stato === 'working');
   $$('.corpo .bottone.pieno, .corpo .bottone.contorno').forEach((b) => { b.disabled = inCorso; });
   if (!inCorso) Object.values(RIABILITA).forEach((fn) => fn());
 
-  s.avanzamento.classList.toggle('visibile', inCorso);
+  s.avanzamento.classList.toggle('visibile', stato === 'working');
   $('#stato-avanzo').hidden = true;
-  if (inCorso) {
+  if (stato === 'working') {
     // La barra riparte da zero, non da un valore finto: il primo numero vero
     // arriva dal motore entro una frazione di secondo.
     s.barra.style.width = '0%';
@@ -582,7 +634,11 @@ function avvia() {
     // e senza questo resterebbe l'unica cosa che ci si aspetta e non funziona.
     let dentro = 0;
     const velo = $('#velo-trascina');
+    // Solo cio' che arriva da fuori: trascinare una riga dentro la pagina (la
+    // scaletta del CD) non e' un link, e il velo coprirebbe le righe.
+    const daFuori = () => !document.querySelector('.in-volo');
     window.addEventListener('dragenter', (e) => {
+      if (!daFuori()) return;
       e.preventDefault(); dentro++; velo.classList.add('visibile');
     });
     window.addEventListener('dragover', (e) => e.preventDefault());
@@ -590,6 +646,7 @@ function avvia() {
       if (--dentro <= 0) { dentro = 0; velo.classList.remove('visibile'); }
     });
     window.addEventListener('drop', (e) => {
+      if (!daFuori()) return;
       e.preventDefault(); dentro = 0; velo.classList.remove('visibile');
       const testo = (e.dataTransfer.getData('text/uri-list')
                   || e.dataTransfer.getData('text/plain') || '').trim();

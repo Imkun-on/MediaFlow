@@ -49,6 +49,13 @@ function initSottotitoli() {
   window.registraSezione('sub', {
     riabilita: statoBottoni,
     scorciatoia: aggiornaSottotitoli,
+    inSospeso: () => Boolean(S_FILE) && S_SPORCO,
+    azzera: () => {
+      S_FILE = ''; S_RIQUADRI = []; S_SPORCO = false; S_ATTIVO = -1; S_SCHEDA = null;
+      S$('s-file').value = '';
+      svuotaSottotitoli();
+      aggiornaNota();
+    },
     traduci: () => {
       S$('s-nuovo').title = window.t('sub.nuovo');
       if (!S_FILE) svuotaSottotitoli();

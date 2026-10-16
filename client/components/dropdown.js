@@ -151,6 +151,8 @@ function potenzia(select) {
 
   document.addEventListener('click', chiudi);
   window.addEventListener('resize', chiudi);
+  // Un valore impostato dal codice (``select.value = ...`` seguito da change).
+  select.addEventListener('change', mostraValore);
   // Chi riempie il <select> dopo non deve ricordarsi di avvisare nessuno.
   new MutationObserver(() => { if (aperto) costruisci(); else mostraValore(); })
     .observe(select, { childList: true, subtree: true, characterData: true });

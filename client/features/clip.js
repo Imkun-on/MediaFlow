@@ -31,7 +31,8 @@ const C_CON_TIMELINE = ['taglia', 'gif', 'webp'];
 /* ── Tempi ─────────────────────────────────────────────────────────────── */
 
 function tempoScritto(secondi) {
-  const s = Math.max(0, secondi || 0);
+  // Arrotondati ai decimi prima di dividere: 59.96 e' 01:00.0, non 00:60.0.
+  const s = Math.round(Math.max(0, secondi || 0) * 10) / 10;
   const ore = Math.floor(s / 3600);
   const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
   const ss = (s % 60).toFixed(1).padStart(4, '0');
@@ -412,6 +413,13 @@ function initClip() {
   window.registraSezione('clip', {
     scorciatoia: esegui,
     predefinita: C_AZIONE,
+    // Il video aperto e il risultato dell'operazione di prima se ne vanno:
+    // ogni operazione riparte dalla scelta del file.
+    azzera: () => {
+      C_FILE = []; C_INFO = null; C_VIDEO = null; C_DA = 0; C_A = 0;
+      C$('c-file').value = '';
+      disegnaBanco();
+    },
     // Una linguetta: si cambia operazione. Fra Taglia, GIF e WebP il video e
     // la selezione restano; Unisci ne vuole piu' d'uno, e si ricomincia.
     sottosezione: (azione) => {

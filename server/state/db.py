@@ -443,6 +443,18 @@ def record_anime_download(
 
 # === QUERY ===
 
+def aggiorna_percorso(vecchio: str, nuovo: str) -> None:
+    """Un file rinominato sul disco (una traccia rinumerata): il registro lo
+    deve seguire, o la libreria non lo troverebbe piu'."""
+    try:
+        conn = _get_conn()
+        conn.execute("UPDATE downloads SET file_path=? WHERE file_path=?",
+                     (_relative_path(nuovo), _relative_path(vecchio)))
+        conn.commit()
+    except Exception as e:
+        log.warning("DB: percorso non aggiornato per '%s': %s", vecchio, e)
+
+
 def is_recorded(scraper_type: str, source_id: str, media_kind: str | None = None) -> bool:
     """Indica se un download è già registrato (per saltare i duplicati).
 

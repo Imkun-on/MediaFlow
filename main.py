@@ -46,6 +46,11 @@ from __future__ import annotations
 
 import os
 
+# Prima di tutto il resto: da qui in poi nessun ffmpeg, ffprobe o Python di
+# servizio apre la sua finestra di terminale (vedi server/utils/nascosto.py).
+from server.utils.nascosto import nascondi_console
+nascondi_console()
+
 from server.config.paths import risorsa as _risorsa
 from server.controllers import bridge
 from server.controllers.api import Api

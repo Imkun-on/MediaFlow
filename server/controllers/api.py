@@ -139,7 +139,10 @@ def _apri_col_sistema(percorso: str) -> None:
 
 # Il file di log di ciascuna sezione. I nomi sono quelli che i motori danno ai
 # propri logger in setup_logger(), e vanno tenuti allineati a quelli.
-_LOG_DI = {'audio': 'audiodex', 'burn': 'burndex', 'pix': 'pixdex', 'clip': 'clipdex'}
+_LOG_DI = {'audio': 'audiodex', 'burn': 'burndex', 'pix': 'pixdex', 'clip': 'clipdex',
+           # Video, Sottotitoli e Doppiaggio scrivono nel log di audiodex (lo
+           # stesso dei loro moduli): senza una voce qui righe ed errori sparivano.
+           'video': 'audiodex', 'sub': 'audiodex', 'dop': 'audiodex'}
 
 
 class Diario(io.TextIOBase):
@@ -220,7 +223,15 @@ class Api:
         # Il posto di lavoro e' uno solo per tutto il programma, e la sua
         # meccanica sta in server/state/jobs.py: qui la si usa e basta.
         self._posto = Posto()
-        self._risultati: list[dict] = []
+        # Cio' che l'ultima analisi ha trovato, cosa e' arrivato e dove: uno
+        # per sezione. Erano condivisi, e un download in Video cambiava sotto
+        # i piedi la coda che Audio stava per scaricare.
+        self._lotti: dict[str, dict] = {
+            sez: {'risultati': [], 'playlist': '', 'pronti': {}}
+            for sez in ('audio', 'video')}
+
+    def _lotto(self, sezione: str | None) -> dict:
+        return self._lotti['video' if sezione == 'video' else 'audio']
 
     # ── Avvio ────────────────────────────────────────────────────────────────
 
@@ -340,11 +351,12 @@ class Api:
 
     def _analizza_davvero(self, testo: str, opzioni: dict) -> None:
         ad = _motore()
-        self._playlist = ''
+        lotto = self._lotto(opzioni.get('sezione'))
+        lotto['playlist'] = ''
         album = None
         if ad.e_playlist(testo):
             nome, trovati, _meta = ad.get_playlist_entries(testo)
-            self._playlist = nome or 'Playlist'
+            lotto['playlist'] = nome or 'Playlist'
             titolo = i18n.t('res.playlist', n=len(trovati), titolo=nome)
         else:
             info = ad.get_video_details(testo)
@@ -360,18 +372,18 @@ class Api:
                 if album:
                     trovati[0]['capitoli'] = album
 
-        self._risultati = trovati or []
-        if not self._risultati:
+        lotto['risultati'] = trovati or []
+        if not lotto['risultati']:
             raise ErroreSpiegato(i18n.t('err.nothing'))
         bridge.verso_pagina('mostraScelta', {
             'titolo': titolo,
-            'playlist': bool(self._playlist),
+            'playlist': bool(lotto['playlist']),
             'voci': [{
                 'titolo': v.get('title', ''),
                 'durata': self._durata(v.get('duration')),
                 'canale': v.get('uploader') or v.get('channel') or '',
                 'miniatura': self._miniatura(v.get('id')),
-            } for v in self._risultati],
+            } for v in lotto['risultati']],
             'album': [{
                 'titolo': c['titolo'],
                 'inizio': c['inizio'],
@@ -382,7 +394,7 @@ class Api:
         # risposta della finestra, che torna con ``scarica``. Con ``attendi``
         # non parte niente: la pagina mette in coda quello che ha trovato, e a
         # scaricare ci pensa il suo bottone.
-        if not self._playlist and not album and not opzioni.get('attendi'):
+        if not lotto['playlist'] and not album and not opzioni.get('attendi'):
             self._scarica_davvero({**opzioni, 'scelti': [0], 'dividi': False})
 
     # ── Download ─────────────────────────────────────────────────────────────
@@ -390,7 +402,7 @@ class Api:
     def scarica(self, opzioni: dict) -> dict:
         """Avvia il download di cio' che l'analisi ha trovato."""
         bridge.entra('video' if opzioni.get('sezione') == 'video' else 'audio')
-        if not self._risultati:
+        if not self._lotto(opzioni.get('sezione'))['risultati']:
             return {'ok': False, 'errore': i18n.t('err.nothing')}
         if not self._posto.occupa():
             return {'ok': False, 'errore': i18n.t('err.busy')}
@@ -415,6 +427,7 @@ class Api:
 
         ad = _motore()
         video = opzioni.get('sezione') == 'video'
+        lotto = self._lotto(opzioni.get('sezione'))
         # Una playlist o un album finiscono in una cartella tutta loro, col
         # loro nome, dentro quella della sezione.
         cartella = _video() if video else _audio()
@@ -434,14 +447,14 @@ class Api:
         if ritocchi is not None:
             ritocchi['metadati'] = bool(opzioni.get('metadati', True))
             ritocchi['copertina'] = bool(opzioni.get('copertina', True))
-        if getattr(self, '_playlist', '') and (video or opzioni.get('cartella_playlist', True)):
+        if lotto['playlist'] and (video or opzioni.get('cartella_playlist', True)):
             from server.utils.text import nome_file_pulito
-            cartella = os.path.join(cartella, nome_file_pulito(self._playlist))
+            cartella = os.path.join(cartella, nome_file_pulito(lotto['playlist']))
             os.makedirs(cartella, exist_ok=True)
 
         scelti = opzioni.get('scelti')
-        indici = ([i for i in scelti if 0 <= i < len(self._risultati)]
-                  if scelti else list(range(len(self._risultati))))
+        indici = ([i for i in scelti if 0 <= i < len(lotto['risultati'])]
+                  if scelti else list(range(len(lotto['risultati']))))
         if not indici:
             bridge.verso_pagina('mostraRiepilogo',
                           {'testo': i18n.t('err.nothing'), 'ok': False})
@@ -449,7 +462,7 @@ class Api:
 
         # Cosa e' arrivato e dove, per i bottoni «Apri» della pagina: la pagina
         # chiede per numero di traccia, e i percorsi restano da questa parte.
-        self._pronti: dict[int, str] = {}
+        lotto['pronti'] = {}
 
         totale = len(indici)
         fatte = [0]
@@ -490,7 +503,7 @@ class Api:
 
         def una(indice: int) -> dict:
             bridge.entra(dove)
-            entry = self._risultati[indice]
+            entry = lotto['risultati'][indice]
             bridge.verso_pagina('tracciaFase', indice, 'download')
 
             def byte(scaricati: int, totali: int, k=indice) -> None:
@@ -512,7 +525,7 @@ class Api:
                 ritocchi=ritocchi,
                 track_num=indice + 1,
                 total_tracks=totale,
-                numbered=bool(getattr(self, '_playlist', '')),
+                numbered=bool(lotto['playlist']),
                 fetch_lyrics=not video and bool(opzioni.get('testi', True)),
                 sincronizza=not video and bool(opzioni.get('sincronizza', True)),
                 media='video' if video else 'audio',
@@ -533,7 +546,7 @@ class Api:
             # in cui il download e' finito, oggi o in un giorno passato.
             if c_era:
                 esito['quando'] = self._quando(os.path.getmtime(file))
-                self._pronti[indice] = file
+                lotto['pronti'][indice] = file
             # Il testo per leggerlo mentre si ascolta: quello appena trovato,
             # o per un brano che c'era gia' quello scritto nel suo file.
             testo = ''
@@ -564,7 +577,7 @@ class Api:
                     indice = lavori[lavoro]
                     bridge.verso_pagina('tracciaFinita', indice, 'fail', str(exc))
                     esiti.append({'status': 'fail', 'indice': indice,
-                                  'title': self._risultati[indice].get('title', ''),
+                                  'title': lotto['risultati'][indice].get('title', ''),
                                   'error': str(exc)})
 
         tot = len(esiti)
@@ -660,9 +673,9 @@ class Api:
         _apri_col_sistema(percorso)
         return {'ok': True}
 
-    def apri_scaricato(self, indice: int) -> dict:
+    def apri_scaricato(self, indice: int, sezione: str = 'video') -> dict:
         """Apre un file appena scaricato col programma predefinito di Windows."""
-        file = getattr(self, '_pronti', {}).get(int(indice), '')
+        file = self._lotto(sezione)['pronti'].get(int(indice), '')
         if not os.path.isfile(file):
             return {'ok': False, 'errore': i18n.t('err.nothing')}
         _apri_col_sistema(file)
@@ -809,15 +822,24 @@ class Api:
                 # sempre livellato, disco lasciato nell'unita' (lo si toglie a
                 # mano). I silenzi ai bordi si rifilano nelle raccolte di
                 # singoli e si lasciano negli album (vedi ``e_un_album``).
-                masterizza_cartella(
-                    da_incidere,
-                    speed_x=None,
-                    dry_run=False,
-                    espelli=False,
-                    indice_unita=None,
-                    livella=True,
-                    rifila=not bd.e_un_album(originali),
-                )
+                from server.utils.console import console as _console
+                with _console.capture() as cattura:
+                    codice = masterizza_cartella(
+                        da_incidere,
+                        speed_x=None,
+                        dry_run=False,
+                        espelli=False,
+                        indice_unita=None,
+                        livella=True,
+                        rifila=not bd.e_un_album(originali),
+                    )
+                racconto = cattura.get()
+                # Nel log come prima: la cattura lo aveva solo trattenuto.
+                print(racconto)
+                if codice != 0:
+                    # Il motore spiega il perche' nelle sue ultime righe.
+                    righe = [r.strip() for r in racconto.splitlines() if r.strip()]
+                    raise ErroreSpiegato(' '.join([i18n.t('burn.failed')] + righe[-3:]))
         finally:
             if temporanea:
                 _shutil.rmtree(temporanea, ignore_errors=True)
@@ -999,8 +1021,7 @@ class Api:
             if not ok and tagliato and os.path.exists(tagliato):
                 os.remove(tagliato)
         if not ok:
-            bridge.verso_pagina('mostraRiepilogo', {'testo': i18n.t('pix.failed'), 'ok': False})
-            return
+            raise ErroreSpiegato(i18n.t('pix.failed'))
 
         png = ''
         if opzioni.get('confronto', True):
@@ -1059,8 +1080,7 @@ class Api:
         ok = px.rimasterizza(info, dst, catena, bool(opzioni.get('gpu')),
                              px.CRF_DEFAULT, avanzamento=avanzamento)
         if not ok:
-            bridge.verso_pagina('mostraRiepilogo', {'testo': i18n.t('pix.failed'), 'ok': False})
-            return
+            raise ErroreSpiegato(i18n.t('pix.failed'))
 
         png = ''
         if opzioni.get('confronto', True):
@@ -1201,7 +1221,9 @@ class Api:
                                  int(opzioni.get('larghezza') or cd.GIF_LARGHEZZA))
         # Quello che esce si guarda qui: la GIF e il WebP come immagini, lo
         # spezzone e l'unione nel lettore.
-        anteprima = self._url_file(dst) if esito else ''
+        if not esito:
+            raise ErroreSpiegato(i18n.t('clip.failed', file=os.path.basename(dst)))
+        anteprima = self._url_file(dst)
         bridge.verso_pagina('clipFinito', {
             'ok': bool(esito),
             'file': os.path.basename(dst),

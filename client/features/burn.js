@@ -42,6 +42,10 @@ function initBurn() {
         || $('#b-barra-cd').classList.contains('troppo');
     },
     scorciatoia: masterizza,
+    azzera: () => {
+      $('#b-cartella').value = '';
+      svuotaTracce();
+    },
     traduci: () => {
       if (!B_TRACCE.length) svuotaTracce();
       else notaSilenzi();

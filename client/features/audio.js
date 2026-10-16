@@ -32,6 +32,11 @@ function initScaricatore(sez) {
 
   window.registraSezione(sez, {
     scorciatoia: () => avviaScarico(sez),
+    azzera: () => {
+      $('#' + p + '-link').value = '';
+      svuotaRisultati(sez);
+      if (sez === 'video') svuotaPronti();
+    },
     traduci: () => {
       if (!SCARICO[sez].schede.length) svuotaRisultati(sez);
       if (sez === 'video' && !SCARICO.video.file.length) svuotaPronti();
@@ -511,7 +516,7 @@ function aggiungiPronto(i, scheda, vecchio, quando) {
     quando ? (vecchio ? window.t('fase.quando', { quando }) : quando) : ''));
   const apri = window.el('button', 'bottone contorno', window.t('video.apri'));
   apri.addEventListener('click', async () => {
-    const esito = await window.pywebview.api.apri_scaricato(i);
+    const esito = await window.pywebview.api.apri_scaricato(i, 'video');
     if (!esito.ok) window.errore(esito.errore, 'video');
   });
   riga.appendChild(apri);

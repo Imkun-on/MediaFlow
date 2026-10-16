@@ -196,6 +196,70 @@ def get_video_details(url: str) -> dict | None:
         return None
 
 
+# Le versioni che non sono lo stesso brano: si scartano, a meno che non lo
+# dica gia' il titolo originale (una «Live» cercata resta una live).
+_ALTRE_VERSIONI = ('live', 'cover', 'remix', 'karaoke', 'instrumental', 'strumentale',
+                   '8d', 'slowed', 'sped up', 'nightcore', 'reverb', 'bass boosted',
+                   'reaction', 'tutorial', 'lesson', 'piano version', 'acoustic')
+
+
+def cerca_alternativa(titolo: str, artista: str, durata: float | None,
+                      escludi: str = '') -> dict | None:
+    """Lo stesso brano caricato da un altro canale, quando l'originale non si
+    puo' scaricare.
+
+    Il caso per cui esiste: le tracce automatiche di YouTube Music (quelle con
+    la sola copertina, «Provided to YouTube by...») YouTube non le da' agli IP
+    di Tor, da nessun Paese e con nessun client: rispondono «Video
+    unavailable». Il video ufficiale, il lyric video o il caricamento
+    «(Audio)» dello stesso brano invece si scaricano, e sempre via Tor.
+
+    Fra i primi risultati vince quello con la durata piu' vicina
+    all'originale; quelli che durano troppo diversamente sono un'altra cosa
+    (una versione estesa, un video con un lungo prologo) e si scartano.
+    Restituisce {'url', 'titolo'} oppure None.
+    """
+    artista = re.sub(r'\s*-\s*Topic$', '', artista or '').strip()
+    domanda = f'{artista} {titolo}'.strip()
+    if not domanda:
+        return None
+    try:
+        info = _estrai(_apply_cookies({
+            'quiet': True, 'no_warnings': True, 'extract_flat': True,
+        }), f'ytsearch8:{domanda}')
+    except Exception as e:                  # noqa: BLE001
+        log.warning('Ricerca alternativa fallita per %s: %s', domanda, e)
+        return None
+    originale = titolo.lower()
+    parole = [w for w in re.findall(r'\w+', originale) if len(w) > 2]
+    migliore, scarto_migliore = None, None
+    for v in (info or {}).get('entries') or []:
+        vid = v.get('id') or ''
+        nome = (v.get('title') or '').lower()
+        if not vid or vid == escludi:
+            continue
+        if any(x in nome and x not in originale for x in _ALTRE_VERSIONI):
+            continue
+        # Il titolo del brano deve esserci: «Missing You» non e' «You».
+        if parole and not all(w in nome for w in parole):
+            continue
+        d = v.get('duration')
+        if durata and d:
+            scarto = abs(d - durata)
+            if scarto > max(15, durata * 0.1):
+                continue
+        else:
+            scarto = 30.0          # durata ignota: va bene, ma dopo le altre
+        if any(x in nome for x in ('audio', 'lyric')):
+            scarto -= 1            # a parita', il caricamento solo audio
+        if scarto_migliore is None or scarto < scarto_migliore:
+            migliore, scarto_migliore = v, scarto
+    if not migliore:
+        return None
+    return {'url': f"https://www.youtube.com/watch?v={migliore['id']}",
+            'titolo': migliore.get('title') or ''}
+
+
 def commenti_migliori(url: str, quanti: int = 30) -> list[str]:
     """Il testo dei commenti piu' votati di un video, senza le risposte.
 

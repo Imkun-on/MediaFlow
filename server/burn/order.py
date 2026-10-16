@@ -100,7 +100,8 @@ def durata_traccia(path: str) -> float | None:
             capture_output=True, text=True, check=True, encoding='utf-8',
         )
         return float(json.loads(out.stdout)['format']['duration'])
-    except (subprocess.CalledProcessError, KeyError, ValueError, json.JSONDecodeError) as exc:
+    except (subprocess.CalledProcessError, OSError, KeyError, ValueError,
+            json.JSONDecodeError) as exc:
         log.error('ffprobe fallito su %s: %s', path, exc)
         return None
 

@@ -43,6 +43,8 @@ TESTI: dict[str, str] = {
     'lib.sotto':        'Tutto ciò che hai scaricato, pronto da ascoltare.',
     'lib.apri':         'Apri cartella',
     'lib.tutti':        'Tutti i file',
+    'lib.archivio':     'Già scaricati',
+    'lib.archivio.vuoto': 'Qui trovi i brani scaricati in passato: per ora non ce ne sono.',
     'lib.fatti':        'Completati',
     'lib.coda':         'In coda',
     'lib.cerca':        'Cerca nella libreria',
@@ -169,6 +171,11 @@ TESTI: dict[str, str] = {
     'trascina':         'Lascia qui il link',
     'comune.clicca':    'Clicca per scegliere…',
     'comune.annulla':   'Annulla',
+    'esci.titolo':      'Correzioni non salvate',
+    'esci.testo':       'Ci sono correzioni non ancora aggiornate. Uscendo la sezione '
+                        'torna alla schermata iniziale e le correzioni vanno perse.',
+    'esci.resta':       'Resta qui',
+    'esci.esci':        'Esci e scarta',
     'err.no_file':      'Prima scegli un file.',
 
     # ── Masterizzazione ──────────────────────────────────────────────────────
@@ -227,6 +234,7 @@ TESTI: dict[str, str] = {
     'pix.unreadable':   'Nessun flusso video leggibile in quel file.',
     'pix.done':         'Fatto: {file}',
     'pix.failed':       'Il miglioramento non è riuscito.',
+    'burn.failed':      'La masterizzazione non è riuscita.',
     'pix.ai.nome':      'AI (molto lento)',
     'pix.ai.desc':      "Real-ESRGAN ridisegna ogni fotogramma: aggiunge dettaglio, ma "
                         "inventato. Ottimo sui cartoni, a volte sbaglia volti e scritte. "

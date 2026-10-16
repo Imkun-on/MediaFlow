@@ -183,9 +183,18 @@ function aggiornaNodo(r) {
   n.querySelector('.filo').style.width = r.stato === 'lavora' ? quota + '%' : '0';
 }
 
+/* Le righe della vista aperta. L'archivio tiene i brani scaricati in passato
+ * (nelle sessioni prima, o prima di lasciare la sezione); le altre linguette
+ * solo quelli di adesso, cosi' Audio si apre pulita e non mostra il lavoro di
+ * ieri. */
+function inVista() {
+  const archivio = LIB.linguetta === 'archivio';
+  return LIB.righe.filter((r) => Boolean(r.passato) === archivio);
+}
+
 function visibili() {
   const cerca = LIB.cerca.trim().toLowerCase();
-  return LIB.righe.filter((r) => {
+  return inVista().filter((r) => {
     if (cerca && !(r.titolo + ' ' + r.artista).toLowerCase().includes(cerca)) return false;
     if (LIB.soloFatti && r.stato !== 'fatto') return false;
     if (LIB.linguetta === 'fatti') return r.stato === 'fatto';
@@ -201,11 +210,12 @@ function disegnaLibreria() {
   if (righe.length) {
     box.replaceChildren(...righe.map((r) => r.nodo));
   } else {
-    box.replaceChildren(window.statoVuoto(
-      window.t(LIB.righe.length ? 'lib.vuota' : 'lib.vuota.inizio')));
+    const vista = inVista();
+    box.replaceChildren(window.statoVuoto(window.t(vista.length ? 'lib.vuota'
+      : LIB.linguetta === 'archivio' ? 'lib.archivio.vuoto' : 'lib.vuota.inizio')));
   }
-  L$('a-conta').textContent = String(LIB.righe.length);
-  const fatti = LIB.righe.filter((r) => r.stato === 'fatto');
+  L$('a-conta').textContent = String(inVista().length);
+  const fatti = inVista().filter((r) => r.stato === 'fatto');
   L$('a-totali').textContent = window.t('lib.totali', {
     n: fatti.length, peso: pesoLeggibile(fatti.reduce((s, r) => s + (r.peso || 0), 0)),
   });
@@ -434,6 +444,12 @@ function arrivaScelta(dati) {
     album: dati.playlist ? (dati.titolo || '') : '',
   }));
   LIB.righe = nuove.concat(LIB.righe);
+  // Quello appena trovato si vede subito, anche se si stava guardando l'archivio.
+  if (LIB.linguetta === 'archivio') {
+    LIB.linguetta = 'tutti';
+    L$('a-linguette').querySelectorAll('button').forEach((x) =>
+      x.classList.toggle('attiva', x.dataset.l === 'tutti'));
+  }
   L$('a-link').value = '';
   disegnaLibreria();
   if (nuove.length) scegli(nuove[0]);
@@ -512,7 +528,8 @@ async function caricaLibreria() {
   try { esito = await window.pywebview.api.libreria(); } catch (_) { return; }
   if (!esito || !esito.ok) return;
   LIB.libero = esito.libero || 0;
-  const gia = (esito.brani || []).map((b) => nuovaRiga({ ...b, stato: 'fatto', spuntata: false }));
+  const gia = (esito.brani || []).map((b) => nuovaRiga({
+    ...b, stato: 'fatto', spuntata: false, passato: true }));
   LIB.righe = LIB.righe.concat(gia);
   disegnaLibreria();
 }
@@ -560,9 +577,29 @@ function initAudio() {
 
   window.registraSezione('audio', {
     scorciatoia: analizzaAudio,
+    // La libreria e il lettore restano: sono la schermata di Audio, non il
+    // risultato di un'operazione. Se ne va il link e il brano aperto.
+    azzera: () => {
+      L$('a-link').value = '';
+      // Quello che e' arrivato va in archivio; code e fallimenti se ne vanno.
+      LIB.righe = LIB.righe.filter((r) => r.passato || r.stato === 'fatto' || r === LIB.suona);
+      LIB.righe.forEach((r) => { if (r.stato === 'fatto') { r.passato = true; r.indice = null; } });
+      LIB.linguetta = 'tutti';
+      L$('a-linguette').querySelectorAll('button').forEach((x) =>
+        x.classList.toggle('attiva', x.dataset.l === 'tutti'));
+      if (LIB.scelta) scegli(null);
+      disegnaLibreria();
+    },
     // A lavoro finito il nucleo riaccende tutti i bottoni: questo torna a
     // dipendere da quante righe aspettano.
-    riabilita: contaCoda,
+    riabilita: () => {
+      // Un lavoro caduto prima di arrivare ai singoli brani non manda mai la
+      // loro fine: senza questo restavano «in scarico» per sempre.
+      const ferme = LIB.righe.filter((r) => r.stato === 'lavora');
+      ferme.forEach((r) => { r.stato = 'fallito'; aggiornaNodo(r); });
+      if (ferme.length) disegnaLibreria();
+      contaCoda();
+    },
     traduci: () => {
       L$('a-cerca').placeholder = window.t('lib.cerca');
       L$('a-filtro').title = window.t('lib.solo_fatti');

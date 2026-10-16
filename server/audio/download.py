@@ -18,6 +18,7 @@ e sta in ``server/services/audio.py``.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 
@@ -34,7 +35,7 @@ from server.audio.chapters import capitoli_album, dividi_per_capitoli
 from server.audio.tagging import leggi_testo, scrivi_lrc, tag_m4a
 from server.audio.verify import verifica_file
 from server.sources.lyrics import cerca_testo
-from server.sources.youtube import _apply_cookies
+from server.sources.youtube import _apply_cookies, cerca_alternativa
 from server.state import db as scraper_db
 from server.state.jobs import INTERROTTO
 from server.utils import tor
@@ -54,6 +55,12 @@ def _retry_delay(attempt: int) -> float:
     non riprovare a raffica e non sincronizzare i retry dei vari thread.
     """
     return retry_delay(attempt, base=RETRY_BASE_DELAY, jitter=(1.0, 3.0))
+
+def _non_disponibile(errore: object) -> bool:
+    """True se YouTube dice che il video non c'e' (per questo IP, o del tutto)."""
+    testo = str(errore).lower()
+    return 'video unavailable' in testo or 'video is not available' in testo
+
 
 def _wanted_name(prefix: str, title: str, existing_path: str) -> str:
     """Nome file atteso per una traccia: prefisso + titolo + estensione attuale.
@@ -75,6 +82,51 @@ def _wanted_name(prefix: str, title: str, existing_path: str) -> str:
     return nome_file_pulito(prefix + nome_file_pulito(title)) + ext
 
 
+# Il numero di traccia davanti al nome: «07 - Titolo».
+_NUMERO = re.compile(r'^\d+ - ')
+# I file che accompagnano un brano o un video e ne seguono il nome: il testo
+# sincronizzato e i sottotitoli, anche tradotti («video.en.srt»). Un elenco
+# chiuso apposta: un prefisso piu' largo («nome.» seguito da qualunque cosa)
+# prenderebbe anche un altro brano che si chiama «Titolo.2».
+_COMPAGNI = re.compile(r'^(\.[a-z]{2,3}(-[a-z]+)?)?\.(lrc|srt)$', re.IGNORECASE)
+# Cercare e rinominare devono stare insieme: le tracce di una playlist si
+# scaricano in parallelo, e due thread non devono contendersi lo stesso file.
+_RINUMERA = threading.Lock()
+
+
+def _rinomina_con_compagni(vecchio: str, nuovo: str) -> bool:
+    """Rinomina un file e quello che gli sta attorno: il .lrc, i .srt, la copia
+    coi sottotitoli impressi, e il percorso nel registro dei download (senza,
+    il brano spariva dalla libreria). True se il file principale e' stato
+    rinominato."""
+    try:
+        os.replace(vecchio, nuovo)
+    except OSError as exc:
+        log.warning('Rinumerazione non riuscita: %s', exc)
+        return False
+    cartella = os.path.dirname(vecchio)
+    stem_v, ext = os.path.splitext(os.path.basename(vecchio))
+    stem_n = os.path.splitext(os.path.basename(nuovo))[0]
+    coppie = []
+    for f in os.listdir(cartella):
+        if f.lower().startswith(stem_v.lower()) and _COMPAGNI.match(f[len(stem_v):]):
+            coppie.append((os.path.join(cartella, f),
+                           os.path.join(cartella, stem_n + f[len(stem_v):])))
+    from server.config.paths import SOTTOTITOLATI
+    impressi = os.path.join(cartella, SOTTOTITOLATI)
+    coppie.append((os.path.join(impressi, f'{stem_v} (sottotitolato){ext}'),
+                   os.path.join(impressi, f'{stem_n} (sottotitolato){ext}')))
+    for da, a in coppie:
+        if os.path.isfile(da) and not os.path.exists(a):
+            try:
+                os.replace(da, a)
+            except OSError as exc:
+                log.warning('Rinomina di %s non riuscita: %s', os.path.basename(da), exc)
+    scraper_db.aggiorna_percorso(vecchio, nuovo)
+    log.info('Rinumerato: %s -> %s', os.path.basename(vecchio), os.path.basename(nuovo))
+    return True
+
+
 def _is_already_downloaded(title: str, output_dir: str, prefix: str = '',
                            exts: frozenset[str] = FORMATI_AUDIO) -> str | None:
     """Controlla se la traccia è già stata scaricata nella cartella di destinazione.
@@ -87,46 +139,56 @@ def _is_already_downloaded(title: str, output_dir: str, prefix: str = '',
     percorso del file trovato oppure None: evita di riscaricare le stesse
     tracce nei run successivi.
 
-    Con un prefisso di traccia riconosce anche i file scaricati da versioni
-    precedenti — cioè *senza* numero — e li rinomina invece di riscaricarli.
-    I file che hanno già un numero diverso NON vengono toccati: in una
-    playlist con due tracce omonime (succede: stesso brano in versione
-    singolo e in versione album) si contenderebbero lo stesso file,
-    rinominandolo a vicenda e lasciandone scaricare una sola.
+    Con un prefisso di traccia riconosce anche lo stesso titolo con un altro
+    numero, o senza: una playlist riordinata su YouTube, o un file scaricato
+    da una versione che il numero non lo metteva. Lo rinomina col numero di
+    adesso, insieme ai suoi .lrc e .srt, invece di riscaricarlo.
+
+    Se pero' lo stesso titolo c'e' con piu' numeri diversi, non si tocca
+    niente: in una playlist con due tracce omonime (succede: stesso brano in
+    versione singolo e in versione album) non si sa quale file sia di quale
+    traccia, e rinominandoli si contenderebbero lo stesso nome.
     """
+    with _RINUMERA:
+        return _cerca_e_rinumera(title, output_dir, prefix, exts)
+
+
+def _cerca_e_rinumera(title: str, output_dir: str, prefix: str,
+                      exts: frozenset[str]) -> str | None:
     if not os.path.isdir(output_dir):
         return None
 
-    safe_title = nome_file_pulito(title)
-    wanted = (prefix + safe_title).lower()
+    safe_title = nome_file_pulito(title).lower()
+    wanted = (prefix + nome_file_pulito(title)).lower()
 
-    fallback = None
+    senza_numero = None
+    altri_numeri = []
     for f in os.listdir(output_dir):
         name_no_ext, ext = os.path.splitext(f)
         if ext.lstrip('.').lower() not in exts:
             continue
         name_no_ext = name_no_ext.lower()
         full = os.path.join(output_dir, f)
-        if name_no_ext == wanted:
-            if os.path.getsize(full) > 10240:
-                return full
+        if os.path.getsize(full) <= 10240:
             continue
-        if prefix and name_no_ext == safe_title.lower():
-            if os.path.getsize(full) > 10240:
-                fallback = full
+        if name_no_ext == wanted:
+            return full
+        if not prefix:
+            continue
+        if name_no_ext == safe_title:
+            senza_numero = full
+        elif _NUMERO.match(name_no_ext) and _NUMERO.sub('', name_no_ext, 1) == safe_title:
+            altri_numeri.append(full)
 
-    if fallback:
-        # Stesso brano senza numerazione: basta rinominarlo.
-        target = os.path.join(output_dir, _wanted_name(prefix, title, fallback))
-        if not os.path.exists(target):
-            try:
-                os.replace(fallback, target)
-                log.info('Rinumerato: %s', os.path.basename(target))
-                return target
-            except OSError as exc:
-                log.warning('Rinumerazione non riuscita: %s', exc)
-        return fallback
-    return None
+    # Prima quello senza numero (era il caso di sempre), poi un altro numero,
+    # ma solo se e' uno: con due candidati non si indovina.
+    trovato = senza_numero or (altri_numeri[0] if len(altri_numeri) == 1 else None)
+    if not trovato:
+        return None
+    target = os.path.join(output_dir, _wanted_name(prefix, title, trovato))
+    if not os.path.exists(target) and _rinomina_con_compagni(trovato, target):
+        return target
+    return trovato
 
 
 # Il link di provenienza letto dai tag di ogni file, per non riaprire lo stesso
@@ -484,6 +546,9 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
         )
         ydl_opts['progress_hooks'] = [hook]
 
+    # Il caricamento di un altro canale, se l'originale non si puo' avere
+    # (vedi ``cerca_alternativa``): si cerca una volta sola.
+    alternativa = None
     for attempt in range(1, MAX_RETRIES + 1):
         if INTERROTTO.is_set():
             result['error'] = 'shutdown'
@@ -493,6 +558,11 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
                 info = ydl.extract_info(url, download=True)
                 if not info:
                     raise Exception('Nessuna info estratta')
+                if alternativa:
+                    # Il file, i tag e il testo restano quelli del brano
+                    # chiesto, non del video da cui l'audio e' arrivato.
+                    info['title'] = title
+                    info['artist'] = info.get('artist') or uploader.removesuffix(' - Topic')
 
                 final_ext = audio_format
                 expected_file = ydl.prepare_filename(info)
@@ -665,6 +735,20 @@ def download_single(entry: dict, output_dir: str, audio_format: str = 'm4a',
         except Exception as e:
             log.warning("Tentativo %d/%d fallito per '%s': %s", attempt, MAX_RETRIES, title, e)
             result['error'] = str(e)[:100]
+            if _non_disponibile(e) and alternativa is None:
+                alternativa = cerca_alternativa(title, uploader, entry.get('duration'),
+                                                escludi=entry.get('id', '')) or False
+                if not alternativa:
+                    # Riprovare lo stesso video non serve: non c'e' e non ci sara'.
+                    break
+                log.info("'%s' non disponibile, scarico da: %s", title, alternativa['titolo'])
+                url = alternativa['url']
+                # Il nome del file e' quello del brano, non del video trovato:
+                # cosi' al giro dopo lo si riconosce come gia' scaricato.
+                ydl_opts['outtmpl'] = os.path.join(
+                    output_dir, prefix + nome_file_pulito(title) + '.%(ext)s')
+                result['alternativa'] = alternativa['titolo']
+                continue
             if tor.bloccato_da_youtube(e):
                 # YouTube ha riconosciuto il nodo Tor: si riprova da un altro.
                 tor.nuova_identita()

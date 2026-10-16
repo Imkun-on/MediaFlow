@@ -28,7 +28,13 @@ function initPix() {
   window.registraSezione('pix', {
     riabilita: () => { $('#p-avvia').disabled = !P_DIAGNOSI; },
     scorciatoia: rimasterizza,
-    traduci: () => { if (!P_DIAGNOSI) { svuotaDiagnosi(); svuotaAnteprima(); } },
+    azzera: () => {
+      $('#p-file').value = '';
+      $('#p-link').value = '';
+      svuotaDiagnosi();
+      svuotaAnteprima();
+    },
+    traduci:() => { if (!P_DIAGNOSI) { svuotaDiagnosi(); svuotaAnteprima(); } },
   });
 }
 
